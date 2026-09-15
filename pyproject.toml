@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avocado-ai-cli"
+version = "0.1.0"
+description = "Avocado AI CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "smolagents",
+    "keyring",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["srs*"]
