@@ -1,0 +1,141 @@
+{
+  "project_name": "Avocado_AI_CLI",
+  "agent_config": {
+    "agent_name": "Avocado",
+    "verbosity_level": 0,
+    "agent_type": "code",
+    "max_steps": 20
+  },
+  "settings": {
+    "version": 1,
+    "providers": [
+      {
+        "id": "openai",
+        "name": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "api_key_env": "OPENAI_API_KEY",
+        "models": [
+          {
+            "name": "gpt-4o",
+            "context": 128000,
+            "max_output": 16384,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 4096,
+              "max_steps": 20
+            }
+          },
+          {
+            "name": "gpt-4o-mini",
+            "context": 128000,
+            "max_output": 16384,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 4096,
+              "max_steps": 20
+            }
+          }
+        ]
+      },
+      {
+        "id": "anthropic",
+        "name": "Anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "models": [
+          {
+            "name": "claude-3-5-sonnet",
+            "context": 200000,
+            "max_output": 8192,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 8192,
+              "max_steps": 20
+            }
+          }
+        ]
+      },
+      {
+        "id": "groq",
+        "name": "Groq",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+        "models": [
+          {
+            "name": "allam-2-7b",
+            "context": 4096,
+            "max_output": 4096,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 4096,
+              "max_steps": 20
+            },
+            "expert": true,
+            "expertise": "general-purpose"
+          },
+          {
+            "name": "openai/gpt-oss-20b",
+            "context": 131072,
+            "max_output": 65536,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 4096,
+              "max_steps": 20
+            },
+            "expert": true,
+            "expertise": "coding"
+          },
+          {
+            "name": "openai/gpt-oss-120b",
+            "context": 131072,
+            "max_output": 65536,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 4096,
+              "max_steps": 20
+            },
+            "expert": true,
+            "expertise": "code review"
+          },
+          {
+            "name": "qwen/qwen3.8-27b",
+            "context": 131072,
+            "max_output": 16384,
+            "params": {
+              "temperature": 0.7,
+              "top_p": 1.0,
+              "max_tokens": 4096,
+              "max_steps": 20
+            },
+            "expert": true,
+            "expertise": "reasoning"
+          }
+        ]
+      }
+    ],
+    "experts": [
+      {
+        "role": "code_reviewer",
+        "name": "Code Reviewer",
+        "description": "Reviews code for quality and security",
+        "agent_type": "code",
+        "allow_tools": false,
+        "tools": []
+      },
+      {
+        "role": "logic_specialist",
+        "name": "Logic Specialist",
+        "description": "Handles logical reasoning and algorithm design",
+        "agent_type": "code",
+        "allow_tools": false,
+        "tools": []
+      }
+    ]
+  }
+}
