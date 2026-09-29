@@ -4,10 +4,16 @@
     "agent_name": "Avocado",
     "verbosity_level": 0,
     "agent_type": "code",
-    "max_steps": 20
+    "max_steps": 20,
+    "additional_authorized_imports": ["json", "math", "time"],
+    "expert_description_template": "Expert agent for {role} tasks."
   },
   "settings": {
-    "version": 1,
+    "version": 2,
+    "defaults": {
+      "base_url": "https://api.openai.com/v1",
+      "accept_encoding": "gzip, deflate"
+    },
     "providers": [
       {
         "id": "openai",
@@ -42,7 +48,7 @@
       {
         "id": "anthropic",
         "name": "Anthropic",
-        "base_url": "https://api.anthropic.com",
+        "base_url": "https://api.anthropic.com/v1",
         "api_key_env": "ANTHROPIC_API_KEY",
         "models": [
           {
@@ -88,7 +94,8 @@
               "max_steps": 20
             },
             "expert": true,
-            "expertise": "coding"
+            "expertise": "coding",
+            "supports_code_loop": false
           },
           {
             "name": "openai/gpt-oss-120b",
@@ -101,7 +108,8 @@
               "max_steps": 20
             },
             "expert": true,
-            "expertise": "code review"
+            "expertise": "code review",
+            "supports_code_loop": false
           },
           {
             "name": "qwen/qwen3.8-27b",
