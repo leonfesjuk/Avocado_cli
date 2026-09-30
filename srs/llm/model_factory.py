@@ -1,13 +1,9 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from smolagents import OpenAIServerModel
 
+from ..config.config_loader import ConfigError, get_defaults
 from ..secrets.secrets_get import get_secret
-
-# Recent OpenAI SDKs use httpx2, whose Brotli decoder calls
-# brotli.Decompressor.process() with an unsupported keyword argument. Requesting
-# gzip/deflate avoids that broken code path. It also keeps responses small.
-_SAFE_ACCEPT_ENCODING = {"Accept-Encoding": "gzip, deflate"}
 
 
 def _resolve_api_key(provider: Dict[str, Any]) -> str:
@@ -17,8 +13,8 @@ def _resolve_api_key(provider: Dict[str, Any]) -> str:
     if not api_key:
         api_key = provider.get("api_key")
 
-    if not api_key and provider.get("id") == "local":
-        api_key = "local"
+    if not api_key:
+        api_key = provider.get("api_key_fallback")
 
     if not api_key:
         raise RuntimeError(
@@ -28,12 +24,30 @@ def _resolve_api_key(provider: Dict[str, Any]) -> str:
     return api_key
 
 
-def _resolve_base_url(provider: Dict[str, Any]) -> str:
-    base_url = provider.get("base_url") or "https://api.openai.com/v1"
-    # Anthropic exposes its OpenAI-compatible endpoint under /v1.
-    if provider.get("id") == "anthropic" and not base_url.rstrip("/").endswith("/v1"):
-        base_url = base_url.rstrip("/") + "/v1"
+def _resolve_base_url(
+    provider: Dict[str, Any],
+    defaults: Optional[Dict[str, Any]] = None,
+) -> str:
+    defaults = get_defaults() if defaults is None else defaults
+    base_url = provider.get("base_url") or defaults.get("base_url")
+
+    if not base_url:
+        raise ConfigError(
+            f"Provider '{provider.get('id')}' has no 'base_url' and "
+            "'settings.defaults.base_url' is not configured."
+        )
     return base_url
+
+
+def _client_kwargs(defaults: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    defaults = get_defaults() if defaults is None else defaults
+    headers: Dict[str, str] = {}
+
+    accept_encoding = defaults.get("accept_encoding")
+    if accept_encoding:
+        headers["Accept-Encoding"] = accept_encoding
+
+    return {"default_headers": headers}
 
 
 def create_model(provider: Dict[str, Any], model_cfg: Dict[str, Any]) -> Any:
@@ -45,11 +59,12 @@ def create_model(provider: Dict[str, Any], model_cfg: Dict[str, Any]) -> Any:
     """
     params = dict(model_cfg.get("params", {}))
     params.pop("max_steps", None)
+    defaults = get_defaults()
 
     return OpenAIServerModel(
         model_id=model_cfg["name"],
-        api_base=_resolve_base_url(provider),
+        api_base=_resolve_base_url(provider, defaults),
         api_key=_resolve_api_key(provider),
-        client_kwargs={"default_headers": _SAFE_ACCEPT_ENCODING},
+        client_kwargs=_client_kwargs(defaults),
         **params,
     )
