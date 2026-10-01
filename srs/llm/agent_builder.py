@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config.config_loader import (
     CONFIG,
+    get_agent_config,
     get_experts_config,
     resolve_model_entry,
 )
@@ -11,16 +12,13 @@ from .smol_engine import SmolEngine
 from .tool_registry import build_tools
 
 
-def _supports_code_loop(provider: Dict[str, Any], model_cfg: Dict[str, Any]) -> bool:
+def _supports_code_loop(model_cfg: Dict[str, Any]) -> bool:
     """Whether a model can drive smolagents' code-only loop.
 
-    Groq's gpt-oss models emit native tool calls even when no tools are
-    declared, which Groq rejects with HTTP 400 in the code-only loop. The
-    tool-calling loop declares the built-in ``final_answer`` tool and works.
+    Some providers reject a code-only loop for specific models. The flag is
+    configured per model with ``supports_code_loop``.
     """
-    if provider.get("id") == "groq" and "gpt-oss" in model_cfg.get("name", ""):
-        return False
-    return True
+    return bool(model_cfg.get("supports_code_loop", True))
 
 
 def _build_engine(
@@ -32,18 +30,23 @@ def _build_engine(
     entry = resolve_model_entry(CONFIG, model_label)
     provider, model_cfg = entry["provider"], entry["model"]
 
-    if agent_type == "code" and not _supports_code_loop(provider, model_cfg):
-        agent_type = "tool"
+    effective_type = model_cfg.get("agent_type", agent_type)
+    if effective_type == "code" and not _supports_code_loop(model_cfg):
+        effective_type = "tool"
 
-    engine = SmolEngine(name=name, description=description, agent_type=agent_type)
+    engine = SmolEngine(
+        name=name,
+        description=description,
+        agent_type=effective_type,
+    )
     engine.set_model(create_model(provider, model_cfg))
     return engine
 
 
 def build_agent(
     main_model_label: str,
-    agent_name: str = "Avocado",
-    agent_type: str = "code",
+    agent_name: Optional[str] = None,
+    agent_type: Optional[str] = None,
     expert_names: Optional[List[str]] = None,
 ) -> BaseEngine:
     """Build the main engine and optionally attach configured experts.
@@ -52,6 +55,10 @@ def build_agent(
     when absent, with the main model. Their ``allow_tools``/``tools`` config
     controls whether they receive tools.
     """
+    agent_config = get_agent_config(CONFIG)
+    agent_name = agent_name if agent_name is not None else agent_config["agent_name"]
+    agent_type = agent_type if agent_type is not None else agent_config["agent_type"]
+
     main_engine = _build_engine(main_model_label, agent_name, "", agent_type)
 
     if not expert_names:
