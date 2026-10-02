@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from smolagents import CodeAgent, ToolCallingAgent
 
-from ..config.config_loader import load_config
+from ..config.config_loader import CONFIG, get_agent_config
 from .base import BaseEngine
 
 
@@ -39,7 +39,9 @@ class SmolEngine(BaseEngine):
         if not getattr(native_agent, "name", None):
             native_agent.name = role
         if not getattr(native_agent, "description", None):
-            native_agent.description = f"Expert agent for {role} tasks."
+            template = get_agent_config(CONFIG).get("expert_description_template")
+            if template:
+                native_agent.description = template.format(role=role)
 
         self._managed_experts.append(native_agent)
         self.experts[role] = expert
@@ -64,10 +66,7 @@ class SmolEngine(BaseEngine):
 
     @staticmethod
     def _max_steps() -> int:
-        try:
-            return int(load_config().get("agent_config", {}).get("max_steps", 20))
-        except Exception:
-            return 20
+        return int(get_agent_config(CONFIG)["max_steps"])
 
     def _rebuild(self) -> None:
         if self.model is None:
@@ -80,7 +79,10 @@ class SmolEngine(BaseEngine):
             "managed_agents": self._managed_experts or None,
             "max_steps": self._max_steps(),
         }
-        if self.agent_type == "code":
-            kwargs["additional_authorized_imports"] = ["json", "math", "time"]
+        authorized_imports = get_agent_config(CONFIG).get(
+            "additional_authorized_imports", []
+        )
+        if self.agent_type == "code" and authorized_imports:
+            kwargs["additional_authorized_imports"] = list(authorized_imports)
 
         self._agent = agent_class(**kwargs)
