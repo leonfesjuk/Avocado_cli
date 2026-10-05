@@ -5,8 +5,26 @@
     "verbosity_level": 0,
     "agent_type": "code",
     "max_steps": 20,
-    "additional_authorized_imports": ["json", "math", "time"],
-    "expert_description_template": "Expert agent for {role} tasks."
+    "additional_authorized_imports": [
+      "json",
+      "math",
+      "time"
+    ],
+    "expert_description_template": "Expert agent for {role} tasks.",
+    "default_model": "Groq/openai/gpt-oss-20b",
+    "memory": {
+      "mode": "session",
+      "compression": {
+        "model": "Groq/openai/gpt-oss-20b",
+        "max_summary_tokens": 1200
+      }
+    },
+    "sessions": {
+      "root": "avocado_sessions",
+      "compress_on_switch": true,
+      "compress_on_exit": true,
+      "auto_save_steps": true
+    }
   },
   "settings": {
     "version": 2,

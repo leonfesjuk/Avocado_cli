@@ -54,6 +54,46 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 "'agent_config.expert_description_template' must be a string."
             )
 
+        default_model = agent_config.get("default_model", "")
+        if not isinstance(default_model, str):
+            errors.append("'agent_config.default_model' must be a string.")
+
+        memory = agent_config.get("memory", {})
+        if not isinstance(memory, dict):
+            errors.append("'agent_config.memory' must be an object.")
+        else:
+            mode = memory.get("mode", "session")
+            if mode not in {"session", "stateless"}:
+                errors.append(
+                    "'agent_config.memory.mode' must be 'session' or 'stateless'."
+                )
+            compression = memory.get("compression", {})
+            if not isinstance(compression, dict):
+                errors.append(
+                    "'agent_config.memory.compression' must be an object."
+                )
+            else:
+                if not isinstance(compression.get("model", ""), str):
+                    errors.append(
+                        "'agent_config.memory.compression.model' must be a string."
+                    )
+                max_tokens = compression.get("max_summary_tokens", 1200)
+                if not isinstance(max_tokens, int) or max_tokens <= 0:
+                    errors.append(
+                        "'agent_config.memory.compression.max_summary_tokens' "
+                        "must be a positive integer."
+                    )
+
+        sessions = agent_config.get("sessions", {})
+        if not isinstance(sessions, dict):
+            errors.append("'agent_config.sessions' must be an object.")
+        else:
+            root = sessions.get("root", "avocado_sessions")
+            if not isinstance(root, str) or not root:
+                errors.append(
+                    "'agent_config.sessions.root' must be a non-empty string."
+                )
+
     settings = config.get("settings")
     if not isinstance(settings, dict):
         errors.append("'settings' must be an object.")
@@ -153,3 +193,18 @@ def get_agent_config(config: Dict[str, Any] = CONFIG) -> Dict[str, Any]:
 def get_defaults(config: Dict[str, Any] = CONFIG) -> Dict[str, Any]:
     """Return global settings defaults such as ``base_url``."""
     return config.get("settings", {}).get("defaults", {})
+
+
+def get_memory_config(config: Dict[str, Any] = CONFIG) -> Dict[str, Any]:
+    """Return persisted-memory settings."""
+    return config.get("agent_config", {}).get("memory", {})
+
+
+def get_sessions_config(config: Dict[str, Any] = CONFIG) -> Dict[str, Any]:
+    """Return session storage settings."""
+    return config.get("agent_config", {}).get("sessions", {})
+
+
+def get_default_model(config: Dict[str, Any] = CONFIG) -> str:
+    """Return the configured default model label, if any."""
+    return config.get("agent_config", {}).get("default_model", "")
