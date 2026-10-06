@@ -21,7 +21,7 @@ class BaseEngine(ABC):
         self.engine_type = engine_type
         self.model: Optional[Any] = None
         self.tools: List[Any] = []
-        self.experts: Dict[str, "BaseEngine"] = {}
+        self.experts: Dict[str, Any] = {}
 
     @abstractmethod
     def set_model(self, model: Any) -> None:
@@ -36,7 +36,12 @@ class BaseEngine(ABC):
         """Attach an expert engine the main loop can delegate to."""
 
     @abstractmethod
-    def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
+    def run(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None,
+        reset: Optional[bool] = None,
+    ) -> str:
         """Execute a task and return the final text answer."""
 
     @abstractmethod
