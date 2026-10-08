@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional
 
 from ..config.config_loader import (
@@ -7,6 +8,7 @@ from ..config.config_loader import (
     resolve_model_entry,
 )
 from .base import BaseEngine
+from .expert_tools import ExpertTool
 from .model_factory import create_model
 from .smol_engine import SmolEngine
 from .tool_registry import build_tools
@@ -68,20 +70,42 @@ def build_agent(
         expert["role"]: expert for expert in get_experts_config(CONFIG)
     }
 
+    expert_tools = []
     for role in expert_names:
         expert_cfg = experts_by_role.get(role)
         if expert_cfg is None:
             continue
 
-        expert = _build_engine(
-            expert_cfg.get("model", main_model_label),
-            expert_cfg.get("name", role),
-            expert_cfg.get("description", ""),
-            expert_cfg.get("agent_type", agent_type),
-        )
-        if expert_cfg.get("allow_tools"):
-            expert.register_tools(build_tools(expert_cfg.get("tools", [])))
+        tool_name = re.sub(r"\W", "_", role)
+        if not tool_name or tool_name[0].isdigit():
+            tool_name = f"expert_{tool_name}"
 
-        main_engine.register_expert(role, expert)
+        def runner(
+            task: str,
+            cfg: Dict[str, Any] = expert_cfg,
+            role_name: str = role,
+        ) -> str:
+            expert = _build_engine(
+                cfg.get("model", main_model_label),
+                cfg.get("name", role_name),
+                cfg.get("description", ""),
+                cfg.get("agent_type", agent_type),
+            )
+            if cfg.get("allow_tools"):
+                expert.register_tools(build_tools(cfg.get("tools", [])))
+            return expert.run(task, reset=True)
+
+        description = expert_cfg.get("description", "")
+        tool = ExpertTool(
+            role=tool_name,
+            name=expert_cfg.get("name", role),
+            description=description,
+            runner=runner,
+        )
+        expert_tools.append(tool)
+        main_engine.experts[role] = tool
+
+    if expert_tools:
+        main_engine.register_tools(expert_tools)
 
     return main_engine
