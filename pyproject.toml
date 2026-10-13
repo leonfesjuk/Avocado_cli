@@ -12,6 +12,9 @@ dependencies = [
     "keyring",
 ]
 
+[project.scripts]
+avocado = "srs.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["srs*"]
