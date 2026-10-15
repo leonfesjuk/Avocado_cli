@@ -15,6 +15,7 @@ from ..config.config_loader import (
 from ..llm.agent_builder import build_agent
 from ..llm.model_factory import create_model
 from ..llm.smol_engine import SmolEngine
+from ..llm.tool_registry import get_tool, list_tool_names
 from ..memory.compression import MemoryCompressor
 from ..memory.plan import UpdatePlanTool, default_plan, merge_plan, utc_now
 from ..memory.prompt import build_instructions
@@ -133,11 +134,66 @@ class SessionManager:
         if isinstance(self.engine, SmolEngine):
             if self.auto_save_steps:
                 self.engine.register_step_callback(self._on_step)
+            self._attach_saved_tools()
             self.engine.register_tools([UpdatePlanTool(self.current)])
             self.engine.set_instructions(
                 build_instructions(self.current, warn_uncompressed=True)
             )
             self.engine.reset_memory()
+
+    def _attach_saved_tools(self) -> None:
+        if self.current is None or not self.current.active_tools:
+            return
+
+        tools = []
+        loaded = []
+        for name in self.current.active_tools:
+            try:
+                tools.append(get_tool(name))
+                loaded.append(name)
+            except KeyError as error:
+                print(f"Warning: {error}")
+
+        if loaded != self.current.active_tools:
+            self.current.active_tools = loaded
+            self.current.save_meta()
+        if tools:
+            self.engine.register_tools(tools)
+
+    def list_tools(self) -> Dict[str, Any]:
+        active = list(self.current.active_tools) if self.current else []
+        return {"registered": list_tool_names(), "active": active}
+
+    def add_tool(self, name: str) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+        if name not in list_tool_names():
+            raise KeyError(f"Tool '{name}' is not registered.")
+        if name in self.current.active_tools:
+            return
+
+        tool = get_tool(name)
+        if isinstance(self.engine, SmolEngine):
+            self.engine.register_tools([tool])
+        self.current.active_tools = [*self.current.active_tools, name]
+        self.current.save_meta()
+
+    def remove_tool(self, name: str) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+        if name not in self.current.active_tools:
+            return
+
+        if isinstance(self.engine, SmolEngine):
+            try:
+                tool_name = get_tool(name).name
+            except KeyError:
+                tool_name = name
+            self.engine.unregister_tools([tool_name])
+        self.current.active_tools = [
+            item for item in self.current.active_tools if item != name
+        ]
+        self.current.save_meta()
 
     def run(self, task: str) -> str:
         if self.current is None:

@@ -3,9 +3,11 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from smolagents import Tool
 
+from srs.cli import _handle_command
 from srs.llm.builtin_tools import (
     HttpGetTool,
     ListDirTool,
@@ -21,6 +23,8 @@ from srs.llm.tool_registry import (
     list_tool_names,
     register_tool,
 )
+from srs.sessions.manager import SessionManager
+from srs.sessions.store import SessionStore
 from tests.test_sessions_memory import FakeCodeModel
 
 
@@ -143,6 +147,81 @@ class EngineToolTests(unittest.TestCase):
 
         self.assertEqual(rebuilt.step_number, step_number)
         self.assertIs(rebuilt.monitor, monitor)
+
+
+class ManagerToolTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.store = SessionStore(root=Path(self.tempdir.name) / "sessions")
+        self.model_patch = patch(
+            "srs.llm.agent_builder.create_model",
+            side_effect=lambda *args, **kwargs: FakeCodeModel(),
+        )
+        self.model_patch.start()
+        register_tool("test_echo", EchoTool)
+
+    def tearDown(self):
+        self.model_patch.stop()
+        TOOL_REGISTRY.pop("test_echo", None)
+        self.tempdir.cleanup()
+
+    def _manager(self):
+        return SessionManager(
+            store=self.store,
+            model_label="OpenAI/gpt-4o",
+            compress_on_switch=False,
+            compress_on_exit=False,
+        )
+
+    def test_add_and_remove_tool_updates_engine(self):
+        manager = self._manager()
+        manager.open()
+
+        manager.add_tool("test_echo")
+        self.assertIn("test_echo", manager.session.active_tools)
+        self.assertIn("echo", [tool.name for tool in manager.engine.tools])
+
+        manager.remove_tool("test_echo")
+        self.assertNotIn("test_echo", manager.session.active_tools)
+        self.assertNotIn("echo", [tool.name for tool in manager.engine.tools])
+
+    def test_active_tool_survives_restart(self):
+        manager = self._manager()
+        manager.open()
+        manager.add_tool("test_echo")
+        session_id = manager.session.session_id
+        manager.close(compress=False)
+
+        restarted = self._manager()
+        restarted.open(session_id)
+
+        self.assertIn("test_echo", restarted.session.active_tools)
+        self.assertIn("echo", [tool.name for tool in restarted.engine.tools])
+
+    def test_add_unknown_tool_raises(self):
+        manager = self._manager()
+        manager.open()
+
+        with self.assertRaises(KeyError):
+            manager.add_tool("missing_tool")
+
+    def test_tools_command_lists_and_mutates(self):
+        manager = self._manager()
+        manager.open()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _handle_command(manager, "/tools list")
+        self.assertIn("test_echo", output.getvalue())
+        self.assertIn("(none)", output.getvalue())
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _handle_command(manager, "/tools add test_echo")
+        self.assertIn("test_echo", manager.session.active_tools)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _handle_command(manager, "/tools remove test_echo")
+        self.assertNotIn("test_echo", manager.session.active_tools)
 
 
 if __name__ == "__main__":

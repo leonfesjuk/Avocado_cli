@@ -4,7 +4,7 @@ import re
 import shutil
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -57,6 +57,7 @@ class Session:
     created_at: str
     updated_at: str
     model: str = ""
+    active_tools: List[str] = field(default_factory=list)
 
     @property
     def meta_path(self) -> Path:
@@ -93,6 +94,7 @@ class Session:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "model": self.model,
+                "active_tools": list(self.active_tools),
             }
 
     def save_meta(self) -> None:
@@ -104,6 +106,7 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "model": self.model,
+            "active_tools": list(self.active_tools),
         }
         _atomic_write(
             self.meta_path,
@@ -224,6 +227,11 @@ class SessionStore:
         if not isinstance(meta, dict):
             return None
 
+        active_tools = meta.get("active_tools") or []
+        if not isinstance(active_tools, list):
+            active_tools = []
+        active_tools = [name for name in active_tools if isinstance(name, str)]
+
         session_id = meta.get("session_id") or path.name
         return Session(
             session_id=session_id,
@@ -232,6 +240,7 @@ class SessionStore:
             created_at=meta.get("created_at") or utc_now(),
             updated_at=meta.get("updated_at") or utc_now(),
             model=meta.get("model") or "",
+            active_tools=active_tools,
         )
 
     def create(

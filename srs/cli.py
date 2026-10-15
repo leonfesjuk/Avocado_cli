@@ -16,6 +16,9 @@ HELP_TEXT = """Commands:
   /delete <id|name>     delete a non-active session
   /plan                 show the current plan
   /memory               show memory paths and preview
+  /tools [list]         list registered and active tools
+  /tools add <name>     attach a registered tool to this session
+  /tools remove <name>  detach a tool from this session
   /compress             fold the raw step journal into memory.md
   /reset [--hard]       clear current history; --hard also clears memory
   /quit                 save and exit
@@ -117,6 +120,26 @@ def _handle_command(manager: SessionManager, line: str) -> bool:
             preview = session.load_memory().strip()
             print()
             print(preview[:4000] if preview else "(empty)")
+    elif command == "/tools":
+        action = args[0] if args else "list"
+        if action == "list":
+            info = manager.list_tools()
+            print("registered: " + ", ".join(info["registered"]))
+            print("active:     " + (", ".join(info["active"]) or "(none)"))
+        elif action == "add":
+            if len(args) != 2:
+                print("Usage: /tools add <name>")
+            else:
+                manager.add_tool(args[1])
+                print(f"Tool '{args[1]}' attached.")
+        elif action == "remove":
+            if len(args) != 2:
+                print("Usage: /tools remove <name>")
+            else:
+                manager.remove_tool(args[1])
+                print(f"Tool '{args[1]}' detached.")
+        else:
+            print("Usage: /tools [list|add|remove] ...")
     elif command == "/compress":
         summary = manager.compress()
         print(summary if summary else "(nothing to compress)")
