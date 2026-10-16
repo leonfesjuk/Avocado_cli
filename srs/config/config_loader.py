@@ -1,10 +1,21 @@
 import json
+import keyword
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
 DEFAULT_CONFIG_FILE_PATH = Path(__file__).resolve().parent / "config.json"
 CONFIG_PATH_ENV = "AVOCADO_CONFIG_PATH"
+
+
+def _expert_tool_name(role: str) -> str:
+    name = re.sub(r"\W", "_", role).strip("_")
+    if not name:
+        name = "expert"
+    if name[0].isdigit() or keyword.iskeyword(name):
+        name = f"expert_{name}"
+    return name
 
 
 class ConfigError(ValueError):
@@ -48,12 +59,6 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             errors.append(
                 "'agent_config.additional_authorized_imports' must be a list."
             )
-        template = agent_config.get("expert_description_template", "")
-        if not isinstance(template, str):
-            errors.append(
-                "'agent_config.expert_description_template' must be a string."
-            )
-
         default_model = agent_config.get("default_model", "")
         if not isinstance(default_model, str):
             errors.append("'agent_config.default_model' must be a string.")
@@ -145,6 +150,67 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             if label in seen_labels:
                 errors.append(f"Duplicate model label '{label}'.")
             seen_labels.add(label)
+
+    experts = settings.get("experts", []) if isinstance(settings, dict) else []
+    if not isinstance(experts, list):
+        errors.append("'settings.experts' must be a list.")
+        experts = []
+
+    seen_roles = set()
+    seen_expert_tools = set()
+    for index, expert in enumerate(experts):
+        prefix = f"settings.experts[{index}]"
+        if not isinstance(expert, dict):
+            errors.append(f"'{prefix}' must be an object.")
+            continue
+
+        role = expert.get("role")
+        if not isinstance(role, str) or not role.strip():
+            errors.append(f"'{prefix}.role' is required.")
+            continue
+        role = role.strip()
+        if role in seen_roles:
+            errors.append(f"Duplicate expert role '{role}'.")
+        seen_roles.add(role)
+
+        tool_name = _expert_tool_name(role)
+        if tool_name in seen_expert_tools:
+            errors.append(
+                f"Expert role '{role}' maps to duplicate tool name "
+                f"'{tool_name}'."
+            )
+        seen_expert_tools.add(tool_name)
+
+        name = expert.get("name")
+        if name is not None and not isinstance(name, str):
+            errors.append(f"'{prefix}.name' must be a string.")
+
+        description = expert.get("description")
+        if description is not None and not isinstance(description, str):
+            errors.append(f"'{prefix}.description' must be a string.")
+
+        agent_type = expert.get("agent_type")
+        if agent_type is not None and agent_type not in {"code", "tool"}:
+            errors.append(f"'{prefix}.agent_type' must be 'code' or 'tool'.")
+
+        allow_tools = expert.get("allow_tools")
+        if allow_tools is not None and not isinstance(allow_tools, bool):
+            errors.append(f"'{prefix}.allow_tools' must be a boolean.")
+
+        tools = expert.get("tools", [])
+        if not isinstance(tools, list) or not all(
+            isinstance(tool, str) for tool in tools
+        ):
+            errors.append(f"'{prefix}.tools' must be a list of strings.")
+
+        model = expert.get("model")
+        if model is not None:
+            if not isinstance(model, str) or not model.strip():
+                errors.append(f"'{prefix}.model' must be a non-empty string.")
+            elif model.strip().lower() not in seen_labels:
+                errors.append(
+                    f"'{prefix}.model' references unknown model '{model}'."
+                )
 
     if errors:
         raise ConfigError("Invalid configuration: " + " ".join(errors))

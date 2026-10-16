@@ -1,4 +1,3 @@
-import re
 from typing import Any, Dict, List, Optional
 
 from ..config.config_loader import (
@@ -8,10 +7,12 @@ from ..config.config_loader import (
     resolve_model_entry,
 )
 from .base import BaseEngine
-from .expert_tools import ExpertTool
+from .expert_tools import ExpertTool, expert_tool_name
 from .model_factory import create_model
 from .smol_engine import SmolEngine
-from .tool_registry import build_tools
+from .tool_registry import build_tools, list_tool_names
+
+RESERVED_TOOL_NAMES = {"update_plan"}
 
 
 def _supports_code_loop(model_cfg: Dict[str, Any]) -> bool:
@@ -45,11 +46,62 @@ def _build_engine(
     return engine
 
 
+def build_expert_tool(
+    role: str,
+    expert_cfg: Dict[str, Any],
+    main_model_label: str,
+    default_agent_type: str,
+    expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> ExpertTool:
+    """Build a one-shot expert tool that reads runtime overrides on each call."""
+    display_name = expert_cfg.get("name") or role
+    description = expert_cfg.get("description", "")
+    overrides = expert_overrides if expert_overrides is not None else {}
+
+    def runner(task: str) -> str:
+        override = overrides.get(role, {})
+        allow_tools = override.get(
+            "allow_tools", expert_cfg.get("allow_tools", False)
+        )
+        tool_names = override.get("tools", expert_cfg.get("tools", []))
+
+        expert = _build_engine(
+            expert_cfg.get("model", main_model_label),
+            display_name,
+            description,
+            expert_cfg.get("agent_type", default_agent_type),
+        )
+        if allow_tools:
+            expert.register_tools(build_tools(tool_names))
+        return expert.run(task, reset=True)
+
+    return ExpertTool(
+        expert_tool_name(role),
+        display_name,
+        description,
+        runner,
+    )
+
+
+def _validate_expert_tools(expert_cfg: Dict[str, Any]) -> None:
+    if not expert_cfg.get("allow_tools"):
+        return
+
+    registered = set(list_tool_names())
+    unknown = sorted(set(expert_cfg.get("tools", [])) - registered)
+    if unknown:
+        raise ValueError(
+            f"Expert '{expert_cfg.get('role')}' references unknown tools: "
+            + ", ".join(unknown)
+        )
+
+
 def build_agent(
     main_model_label: str,
     agent_name: Optional[str] = None,
     agent_type: Optional[str] = None,
     expert_names: Optional[List[str]] = None,
+    expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> BaseEngine:
     """Build the main engine and optionally attach configured experts.
 
@@ -71,36 +123,26 @@ def build_agent(
     }
 
     expert_tools = []
+    seen_tool_names = set()
     for role in expert_names:
         expert_cfg = experts_by_role.get(role)
         if expert_cfg is None:
-            continue
+            raise KeyError(f"Expert '{role}' is not configured.")
 
-        tool_name = re.sub(r"\W", "_", role)
-        if not tool_name or tool_name[0].isdigit():
-            tool_name = f"expert_{tool_name}"
+        _validate_expert_tools(expert_cfg)
+        tool_name = expert_tool_name(role)
+        if tool_name in RESERVED_TOOL_NAMES:
+            raise ValueError(f"Expert tool name '{tool_name}' is reserved.")
+        if tool_name in seen_tool_names:
+            raise ValueError(f"Duplicate expert tool name '{tool_name}'.")
+        seen_tool_names.add(tool_name)
 
-        def runner(
-            task: str,
-            cfg: Dict[str, Any] = expert_cfg,
-            role_name: str = role,
-        ) -> str:
-            expert = _build_engine(
-                cfg.get("model", main_model_label),
-                cfg.get("name", role_name),
-                cfg.get("description", ""),
-                cfg.get("agent_type", agent_type),
-            )
-            if cfg.get("allow_tools"):
-                expert.register_tools(build_tools(cfg.get("tools", [])))
-            return expert.run(task, reset=True)
-
-        description = expert_cfg.get("description", "")
-        tool = ExpertTool(
-            role=tool_name,
-            name=expert_cfg.get("name", role),
-            description=description,
-            runner=runner,
+        tool = build_expert_tool(
+            role,
+            expert_cfg,
+            main_model_label,
+            agent_type,
+            expert_overrides,
         )
         expert_tools.append(tool)
         main_engine.experts[role] = tool

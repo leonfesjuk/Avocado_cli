@@ -19,6 +19,11 @@ HELP_TEXT = """Commands:
   /tools [list]         list registered and active tools
   /tools add <name>     attach a registered tool to this session
   /tools remove <name>  detach a tool from this session
+  /experts [list]       list experts and their tools
+  /experts enable <role>    attach an expert to this session
+  /experts disable <role>   detach an expert from this session
+  /experts tools <role> [tool ...|none]
+                        set the tools an expert may use
   /compress             fold the raw step journal into memory.md
   /reset [--hard]       clear current history; --hard also clears memory
   /quit                 save and exit
@@ -140,6 +145,58 @@ def _handle_command(manager: SessionManager, line: str) -> bool:
                 print(f"Tool '{args[1]}' detached.")
         else:
             print("Usage: /tools [list|add|remove] ...")
+    elif command == "/experts":
+        action = args[0] if args else "list"
+        if action == "list":
+            experts = manager.list_experts()
+            if not experts:
+                print("No experts configured.")
+            for item in experts:
+                state = "on" if item["active"] else "off"
+                tools = ", ".join(item["tools"]) or "(none)"
+                print(
+                    f"{state:3} {item['role']}  "
+                    f"allow_tools={item['allow_tools']}  tools={tools}"
+                )
+        elif action in {"enable", "disable"}:
+            if len(args) != 2:
+                print(f"Usage: /experts {action} <role>")
+            elif action == "enable":
+                manager.enable_expert(args[1])
+                print(f"Expert '{args[1]}' enabled.")
+            else:
+                manager.disable_expert(args[1])
+                print(f"Expert '{args[1]}' disabled.")
+        elif action == "tools":
+            if len(args) < 2:
+                print("Usage: /experts tools <role> [tool ...|none]")
+            else:
+                role = args[1]
+                names = args[2:]
+                if not names:
+                    item = next(
+                        (
+                            expert
+                            for expert in manager.list_experts()
+                            if expert["role"] == role
+                        ),
+                        None,
+                    )
+                    if item is None:
+                        print(f"Unknown expert: {role}")
+                    else:
+                        tools = ", ".join(item["tools"]) or "(none)"
+                        print(
+                            f"{role}: allow_tools={item['allow_tools']} "
+                            f"tools={tools}"
+                        )
+                else:
+                    if names == ["none"]:
+                        names = []
+                    manager.set_expert_tools(role, names)
+                    print(f"Tools for expert '{role}' updated.")
+        else:
+            print("Usage: /experts [list|enable|disable|tools] ...")
     elif command == "/compress":
         summary = manager.compress()
         print(summary if summary else "(nothing to compress)")

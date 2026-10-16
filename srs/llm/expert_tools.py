@@ -1,6 +1,18 @@
+import keyword
+import re
 from typing import Callable
 
 from smolagents import Tool
+
+
+def expert_tool_name(role: str) -> str:
+    """Turn an expert role into a valid tool name."""
+    name = re.sub(r"\W", "_", role).strip("_")
+    if not name:
+        name = "expert"
+    if name[0].isdigit() or keyword.iskeyword(name):
+        name = f"expert_{name}"
+    return name
 
 
 class ExpertTool(Tool):
@@ -21,14 +33,15 @@ class ExpertTool(Tool):
 
     def __init__(
         self,
-        role: str,
-        name: str,
+        tool_name: str,
+        display_name: str,
         description: str,
         runner: Callable[[str], str],
     ) -> None:
-        self.name = role
+        self.name = tool_name
+        summary = f"{display_name}: {description}".strip()
         self.description = (
-            f"{description} This expert is stateless: each call starts fresh, "
+            f"{summary} This expert is stateless: each call starts fresh, "
             "so provide the complete task and all needed context."
         )
         self._runner = runner

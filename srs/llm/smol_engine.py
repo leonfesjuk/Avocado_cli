@@ -19,7 +19,6 @@ class SmolEngine(BaseEngine):
         super().__init__(name=name, description=description, engine_type="smol")
         self.agent_type = agent_type
         self._agent: Optional[Any] = None
-        self._managed_experts: List[Any] = []
         self._instructions = ""
         self._step_callback: Optional[Callable[[Any], None]] = None
         self._session_started = False
@@ -46,25 +45,6 @@ class SmolEngine(BaseEngine):
             return
 
         self.tools = remaining
-        self._rebuild()
-
-    def register_expert(self, role: str, expert: BaseEngine) -> None:
-        native_agent = expert.get_native_agent()
-        if native_agent is None:
-            raise RuntimeError(
-                f"Expert '{role}' has no built agent. Set a model on the "
-                f"expert before registering it."
-            )
-
-        if not getattr(native_agent, "name", None):
-            native_agent.name = role
-        if not getattr(native_agent, "description", None):
-            template = get_agent_config(CONFIG).get("expert_description_template")
-            if template:
-                native_agent.description = template.format(role=role)
-
-        self._managed_experts.append(native_agent)
-        self.experts[role] = expert
         self._rebuild()
 
     def register_step_callback(self, callback: Optional[Callable[[Any], None]]) -> None:
@@ -168,7 +148,6 @@ class SmolEngine(BaseEngine):
         kwargs: Dict[str, Any] = {
             "tools": self.tools,
             "model": self.model,
-            "managed_agents": self._managed_experts or None,
             "max_steps": self._max_steps(),
             "instructions": self._instructions or None,
         }

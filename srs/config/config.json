@@ -10,7 +10,6 @@
       "math",
       "time"
     ],
-    "expert_description_template": "Expert agent for {role} tasks.",
     "default_model": "Groq/openai/gpt-oss-20b",
     "memory": {
       "mode": "session",

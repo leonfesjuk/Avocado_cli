@@ -32,10 +32,6 @@ class BaseEngine(ABC):
         """Attach tool instances to the loop."""
 
     @abstractmethod
-    def register_expert(self, role: str, expert: "BaseEngine") -> None:
-        """Attach an expert engine the main loop can delegate to."""
-
-    @abstractmethod
     def run(
         self,
         task: str,

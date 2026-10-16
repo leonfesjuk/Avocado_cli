@@ -58,6 +58,8 @@ class Session:
     updated_at: str
     model: str = ""
     active_tools: List[str] = field(default_factory=list)
+    active_experts: Optional[List[str]] = None
+    expert_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def meta_path(self) -> Path:
@@ -95,6 +97,15 @@ class Session:
                 "updated_at": self.updated_at,
                 "model": self.model,
                 "active_tools": list(self.active_tools),
+                "active_experts": (
+                    list(self.active_experts)
+                    if self.active_experts is not None
+                    else None
+                ),
+                "expert_overrides": {
+                    role: dict(override)
+                    for role, override in self.expert_overrides.items()
+                },
             }
 
     def save_meta(self) -> None:
@@ -107,6 +118,15 @@ class Session:
             "updated_at": self.updated_at,
             "model": self.model,
             "active_tools": list(self.active_tools),
+            "active_experts": (
+                list(self.active_experts)
+                if self.active_experts is not None
+                else None
+            ),
+            "expert_overrides": {
+                role: dict(override)
+                for role, override in self.expert_overrides.items()
+            },
         }
         _atomic_write(
             self.meta_path,
@@ -232,6 +252,22 @@ class SessionStore:
             active_tools = []
         active_tools = [name for name in active_tools if isinstance(name, str)]
 
+        active_experts = meta.get("active_experts")
+        if active_experts is not None:
+            if isinstance(active_experts, list):
+                active_experts = [
+                    role for role in active_experts if isinstance(role, str)
+                ]
+            else:
+                active_experts = None
+
+        raw_overrides = meta.get("expert_overrides")
+        expert_overrides: Dict[str, Dict[str, Any]] = {}
+        if isinstance(raw_overrides, dict):
+            for role, override in raw_overrides.items():
+                if isinstance(role, str) and isinstance(override, dict):
+                    expert_overrides[role] = override
+
         session_id = meta.get("session_id") or path.name
         return Session(
             session_id=session_id,
@@ -241,6 +277,8 @@ class SessionStore:
             updated_at=meta.get("updated_at") or utc_now(),
             model=meta.get("model") or "",
             active_tools=active_tools,
+            active_experts=active_experts,
+            expert_overrides=expert_overrides,
         )
 
     def create(
