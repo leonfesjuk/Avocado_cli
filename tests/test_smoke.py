@@ -94,6 +94,24 @@ class ConfigTests(unittest.TestCase):
         config = _minimal_config()
         self.assertIs(validate_config(config), config)
 
+    def test_compression_model_must_exist(self):
+        config = _minimal_config()
+        config["agent_config"]["memory"] = {
+            "compression": {"model": "Missing/model"}
+        }
+        with self.assertRaises(ConfigError) as context:
+            validate_config(config)
+        self.assertIn("compression.model", str(context.exception))
+
+    def test_compression_transcript_budget_must_be_positive(self):
+        config = _minimal_config()
+        config["agent_config"]["memory"] = {
+            "compression": {"max_transcript_tokens": 0}
+        }
+        with self.assertRaises(ConfigError) as context:
+            validate_config(config)
+        self.assertIn("max_transcript_tokens", str(context.exception))
+
 
 class ModelFactoryTests(unittest.TestCase):
     def test_prefers_provider_base_url(self):

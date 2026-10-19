@@ -88,6 +88,17 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                         "'agent_config.memory.compression.max_summary_tokens' "
                         "must be a positive integer."
                     )
+                transcript_tokens = compression.get(
+                    "max_transcript_tokens", 6000
+                )
+                if (
+                    not isinstance(transcript_tokens, int)
+                    or transcript_tokens <= 0
+                ):
+                    errors.append(
+                        "'agent_config.memory.compression.max_transcript_tokens' "
+                        "must be a positive integer."
+                    )
 
         sessions = agent_config.get("sessions", {})
         if not isinstance(sessions, dict):
@@ -150,6 +161,24 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             if label in seen_labels:
                 errors.append(f"Duplicate model label '{label}'.")
             seen_labels.add(label)
+
+    memory = (
+        config.get("agent_config", {}).get("memory", {})
+        if isinstance(config.get("agent_config"), dict)
+        else {}
+    )
+    compression = memory.get("compression", {}) if isinstance(memory, dict) else {}
+    if isinstance(compression, dict):
+        label = compression.get("model", "")
+        if (
+            isinstance(label, str)
+            and label.strip()
+            and label.strip().lower() not in seen_labels
+        ):
+            errors.append(
+                "'agent_config.memory.compression.model' references unknown "
+                f"model '{label}'."
+            )
 
     experts = settings.get("experts", []) if isinstance(settings, dict) else []
     if not isinstance(experts, list):

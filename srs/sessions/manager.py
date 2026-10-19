@@ -435,6 +435,9 @@ class SessionManager:
             max_summary_tokens=int(
                 compression.get("max_summary_tokens", 1200)
             ),
+            max_transcript_tokens=int(
+                compression.get("max_transcript_tokens", 6000)
+            ),
         )
         return self._compressor
 

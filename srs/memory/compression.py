@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from smolagents import ChatMessage, MessageRole
 
@@ -56,7 +56,10 @@ def _clip(value: Any, limit: int = 4000) -> str:
     return text[:limit].rstrip() + f"\n[...{len(text) - limit} chars clipped]"
 
 
-def format_steps(steps: List[Dict[str, Any]]) -> str:
+def format_steps(
+    steps: List[Dict[str, Any]],
+    max_tokens: Optional[int] = None,
+) -> str:
     blocks = []
     for record in steps:
         kind = record.get("kind", "step")
@@ -74,7 +77,29 @@ def format_steps(steps: List[Dict[str, Any]]) -> str:
         if tool_calls:
             lines.append(f"tool_calls: {_clip(tool_calls)}")
         blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
+
+    if not max_tokens or max_tokens <= 0 or not blocks:
+        return "\n\n".join(blocks)
+
+    selected = []
+    used = 0
+    for block in reversed(blocks):
+        cost = estimate_tokens(block) + 1
+        if selected and used + cost > max_tokens:
+            break
+        if not selected and cost > max_tokens:
+            selected.append(limit_text(block, max_tokens))
+            break
+        selected.append(block)
+        used += cost
+
+    selected.reverse()
+    if len(selected) < len(blocks):
+        selected.insert(
+            0,
+            "[...older events omitted to fit the transcript budget...]",
+        )
+    return "\n\n".join(selected)
 
 
 class MemoryCompressor:
@@ -84,10 +109,12 @@ class MemoryCompressor:
         self,
         model: Any,
         max_summary_tokens: int = 1200,
+        max_transcript_tokens: int = 6000,
         prompt_template: str = DEFAULT_SUMMARY_PROMPT,
     ) -> None:
         self.model = model
         self.max_summary_tokens = max_summary_tokens
+        self.max_transcript_tokens = max_transcript_tokens
         self.prompt_template = prompt_template
 
     def compress(self, session: Any) -> str:
@@ -102,7 +129,7 @@ class MemoryCompressor:
             max_tokens=self.max_summary_tokens,
             plan=json.dumps(plan, ensure_ascii=False, indent=2),
             memory=previous_memory or "(none)",
-            transcript=format_steps(steps),
+            transcript=format_steps(steps, self.max_transcript_tokens),
         )
         response = self.model.generate(
             [ChatMessage(role=MessageRole.USER, content=prompt)]
@@ -112,19 +139,16 @@ class MemoryCompressor:
             raise RuntimeError("Compression model returned an empty summary.")
 
         summary = limit_text(summary, self.max_summary_tokens)
-        session.save_memory(
-            summary + "\n",
-            {
-                "kind": "compressed",
-                "compacted_steps": len(steps),
-                "estimated_tokens": estimate_tokens(summary),
-                "max_summary_tokens": self.max_summary_tokens,
-                "model": getattr(self.model, "model_id", ""),
-            },
-        )
         archive_path = session.archive_current_run()
+        metadata = {
+            "kind": "compressed",
+            "compacted_steps": len(steps),
+            "estimated_tokens": estimate_tokens(summary),
+            "max_summary_tokens": self.max_summary_tokens,
+            "max_transcript_tokens": self.max_transcript_tokens,
+            "model": getattr(self.model, "model_id", ""),
+        }
         if archive_path:
-            metadata = session.load_memory_meta()
             metadata["archive_path"] = str(archive_path)
-            session.save_memory(summary + "\n", metadata)
+        session.save_memory(summary + "\n", metadata)
         return summary
