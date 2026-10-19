@@ -10,13 +10,13 @@
       "math",
       "time"
     ],
-    "expert_description_template": "Expert agent for {role} tasks.",
     "default_model": "Groq/openai/gpt-oss-20b",
     "memory": {
       "mode": "session",
       "compression": {
         "model": "Groq/openai/gpt-oss-20b",
-        "max_summary_tokens": 1200
+        "max_summary_tokens": 1200,
+        "max_transcript_tokens": 6000
       }
     },
     "sessions": {

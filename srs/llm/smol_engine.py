@@ -19,7 +19,6 @@ class SmolEngine(BaseEngine):
         super().__init__(name=name, description=description, engine_type="smol")
         self.agent_type = agent_type
         self._agent: Optional[Any] = None
-        self._managed_experts: List[Any] = []
         self._instructions = ""
         self._step_callback: Optional[Callable[[Any], None]] = None
         self._session_started = False
@@ -29,26 +28,23 @@ class SmolEngine(BaseEngine):
         self._rebuild()
 
     def register_tools(self, tools: List[Any]) -> None:
-        self.tools.extend(tools)
+        if not tools:
+            return
+
+        merged = {tool.name: tool for tool in self.tools}
+        for tool in tools:
+            merged[tool.name] = tool
+        self.tools = list(merged.values())
         self._rebuild()
 
-    def register_expert(self, role: str, expert: BaseEngine) -> None:
-        native_agent = expert.get_native_agent()
-        if native_agent is None:
-            raise RuntimeError(
-                f"Expert '{role}' has no built agent. Set a model on the "
-                f"expert before registering it."
-            )
+    def unregister_tools(self, names: List[str]) -> None:
+        """Remove tools by name and rebuild the loop if anything changed."""
+        removed = set(names)
+        remaining = [tool for tool in self.tools if tool.name not in removed]
+        if len(remaining) == len(self.tools):
+            return
 
-        if not getattr(native_agent, "name", None):
-            native_agent.name = role
-        if not getattr(native_agent, "description", None):
-            template = get_agent_config(CONFIG).get("expert_description_template")
-            if template:
-                native_agent.description = template.format(role=role)
-
-        self._managed_experts.append(native_agent)
-        self.experts[role] = expert
+        self.tools = remaining
         self._rebuild()
 
     def register_step_callback(self, callback: Optional[Callable[[Any], None]]) -> None:
@@ -137,12 +133,21 @@ class SmolEngine(BaseEngine):
             if previous_agent is not None
             else None
         )
+        previous_step_number = (
+            getattr(previous_agent, "step_number", 0)
+            if previous_agent is not None
+            else 0
+        )
+        previous_monitor = (
+            getattr(previous_agent, "monitor", None)
+            if previous_agent is not None
+            else None
+        )
 
         agent_class = CodeAgent if self.agent_type == "code" else ToolCallingAgent
         kwargs: Dict[str, Any] = {
             "tools": self.tools,
             "model": self.model,
-            "managed_agents": self._managed_experts or None,
             "max_steps": self._max_steps(),
             "instructions": self._instructions or None,
         }
@@ -168,6 +173,12 @@ class SmolEngine(BaseEngine):
         ):
             new_agent.memory.steps = previous_steps
             new_agent.state.update(previous_state)
+            new_agent.step_number = previous_step_number
+            if (
+                previous_monitor is not None
+                and getattr(previous_agent, "model", None) is self.model
+            ):
+                new_agent.monitor = previous_monitor
             if previous_executor is not None and hasattr(new_agent, "python_executor"):
                 new_agent.python_executor = previous_executor
             new_agent.memory.system_prompt = SystemPromptStep(

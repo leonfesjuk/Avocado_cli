@@ -4,7 +4,7 @@ import re
 import shutil
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -57,6 +57,9 @@ class Session:
     created_at: str
     updated_at: str
     model: str = ""
+    active_tools: List[str] = field(default_factory=list)
+    active_experts: Optional[List[str]] = None
+    expert_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def meta_path(self) -> Path:
@@ -93,6 +96,16 @@ class Session:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "model": self.model,
+                "active_tools": list(self.active_tools),
+                "active_experts": (
+                    list(self.active_experts)
+                    if self.active_experts is not None
+                    else None
+                ),
+                "expert_overrides": {
+                    role: dict(override)
+                    for role, override in self.expert_overrides.items()
+                },
             }
 
     def save_meta(self) -> None:
@@ -104,6 +117,16 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "model": self.model,
+            "active_tools": list(self.active_tools),
+            "active_experts": (
+                list(self.active_experts)
+                if self.active_experts is not None
+                else None
+            ),
+            "expert_overrides": {
+                role: dict(override)
+                for role, override in self.expert_overrides.items()
+            },
         }
         _atomic_write(
             self.meta_path,
@@ -224,6 +247,27 @@ class SessionStore:
         if not isinstance(meta, dict):
             return None
 
+        active_tools = meta.get("active_tools") or []
+        if not isinstance(active_tools, list):
+            active_tools = []
+        active_tools = [name for name in active_tools if isinstance(name, str)]
+
+        active_experts = meta.get("active_experts")
+        if active_experts is not None:
+            if isinstance(active_experts, list):
+                active_experts = [
+                    role for role in active_experts if isinstance(role, str)
+                ]
+            else:
+                active_experts = None
+
+        raw_overrides = meta.get("expert_overrides")
+        expert_overrides: Dict[str, Dict[str, Any]] = {}
+        if isinstance(raw_overrides, dict):
+            for role, override in raw_overrides.items():
+                if isinstance(role, str) and isinstance(override, dict):
+                    expert_overrides[role] = override
+
         session_id = meta.get("session_id") or path.name
         return Session(
             session_id=session_id,
@@ -232,6 +276,9 @@ class SessionStore:
             created_at=meta.get("created_at") or utc_now(),
             updated_at=meta.get("updated_at") or utc_now(),
             model=meta.get("model") or "",
+            active_tools=active_tools,
+            active_experts=active_experts,
+            expert_overrides=expert_overrides,
         )
 
     def create(

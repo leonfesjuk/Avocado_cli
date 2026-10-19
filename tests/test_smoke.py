@@ -94,6 +94,24 @@ class ConfigTests(unittest.TestCase):
         config = _minimal_config()
         self.assertIs(validate_config(config), config)
 
+    def test_compression_model_must_exist(self):
+        config = _minimal_config()
+        config["agent_config"]["memory"] = {
+            "compression": {"model": "Missing/model"}
+        }
+        with self.assertRaises(ConfigError) as context:
+            validate_config(config)
+        self.assertIn("compression.model", str(context.exception))
+
+    def test_compression_transcript_budget_must_be_positive(self):
+        config = _minimal_config()
+        config["agent_config"]["memory"] = {
+            "compression": {"max_transcript_tokens": 0}
+        }
+        with self.assertRaises(ConfigError) as context:
+            validate_config(config)
+        self.assertIn("max_transcript_tokens", str(context.exception))
+
 
 class ModelFactoryTests(unittest.TestCase):
     def test_prefers_provider_base_url(self):
@@ -162,31 +180,6 @@ class EngineTests(unittest.TestCase):
             native_agent.additional_authorized_imports,
             agent_config["additional_authorized_imports"],
         )
-
-    def test_register_expert_requires_built_expert(self):
-        main = SmolEngine(name="main", agent_type="code")
-        main.set_model(FakeModel())
-        expert = SmolEngine(name="expert", agent_type="code")
-
-        with self.assertRaises(RuntimeError):
-            main.register_expert("reviewer", expert)
-
-    def test_register_expert_after_model(self):
-        main = SmolEngine(name="main", agent_type="code")
-        main.set_model(FakeModel())
-        expert = SmolEngine(name="expert", agent_type="code")
-        expert.set_model(FakeModel())
-
-        main.register_expert("reviewer", expert)
-
-        self.assertIn("reviewer", main.experts)
-        self.assertEqual(
-            expert.get_native_agent().description,
-            get_agent_config(CONFIG)["expert_description_template"].format(
-                role="reviewer"
-            ),
-        )
-
 
 class BuilderTests(unittest.TestCase):
     def test_build_agent_uses_agent_config_defaults(self):

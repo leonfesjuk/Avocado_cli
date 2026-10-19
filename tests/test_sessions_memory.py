@@ -200,6 +200,46 @@ class CompressionTests(unittest.TestCase):
             1,
         )
         self.assertTrue(list(self.session.archive_dir.glob("*.jsonl")))
+        self.assertTrue(self.session.load_memory_meta()["archive_path"])
+
+    def test_transcript_budget_keeps_recent_events(self):
+        for index in range(30):
+            self.session.append_step(
+                {
+                    "kind": "TaskStep",
+                    "task": f"event {index}",
+                    "timestamp": "now",
+                }
+            )
+        model = FakeSummaryModel()
+
+        MemoryCompressor(
+            model,
+            max_summary_tokens=100,
+            max_transcript_tokens=80,
+        ).compress(self.session)
+
+        prompt = model.prompts[0]
+        self.assertIn("event 29", prompt)
+        self.assertNotIn("event 0", prompt)
+        self.assertIn("older events omitted", prompt)
+
+    def test_archive_exists_before_memory_is_saved(self):
+        observed = {}
+        original_save = self.session.save_memory
+
+        def save_memory(text, metadata=None):
+            observed["archive"] = bool(
+                list(self.session.archive_dir.glob("*.jsonl"))
+            )
+            return original_save(text, metadata)
+
+        self.session.save_memory = save_memory
+        MemoryCompressor(FakeSummaryModel(), max_summary_tokens=100).compress(
+            self.session
+        )
+
+        self.assertTrue(observed["archive"])
 
 
 class PromptAndPlanTests(unittest.TestCase):

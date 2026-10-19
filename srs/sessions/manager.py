@@ -5,6 +5,7 @@ from smolagents.memory import ActionStep, PlanningStep
 
 from ..config.config_loader import (
     CONFIG,
+    get_agent_config,
     get_available_models,
     get_default_model,
     get_experts_config,
@@ -12,9 +13,11 @@ from ..config.config_loader import (
     get_sessions_config,
     resolve_model_entry,
 )
-from ..llm.agent_builder import build_agent
+from ..llm.agent_builder import build_agent, build_expert_tool
+from ..llm.expert_tools import expert_tool_name
 from ..llm.model_factory import create_model
 from ..llm.smol_engine import SmolEngine
+from ..llm.tool_registry import get_tool, list_tool_names
 from ..memory.compression import MemoryCompressor
 from ..memory.plan import UpdatePlanTool, default_plan, merge_plan, utc_now
 from ..memory.prompt import build_instructions
@@ -125,19 +128,188 @@ class SessionManager:
         if self.current is None:
             raise RuntimeError("No session is open.")
 
-        expert_names = [expert["role"] for expert in get_experts_config(CONFIG)]
+        configured = get_experts_config(CONFIG)
+        expert_names = self._active_expert_roles(configured)
+        saved = self.current.active_experts
+        if saved is not None and expert_names != saved:
+            self.current.active_experts = expert_names
+            self.current.save_meta()
+
         self.engine = build_agent(
             main_model_label=self.model_label,
             expert_names=expert_names,
+            expert_overrides=self.current.expert_overrides,
         )
         if isinstance(self.engine, SmolEngine):
             if self.auto_save_steps:
                 self.engine.register_step_callback(self._on_step)
+            self._attach_saved_tools()
             self.engine.register_tools([UpdatePlanTool(self.current)])
             self.engine.set_instructions(
                 build_instructions(self.current, warn_uncompressed=True)
             )
             self.engine.reset_memory()
+
+    def _active_expert_roles(
+        self,
+        configured: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[str]:
+        if configured is None:
+            configured = get_experts_config(CONFIG)
+        roles = [expert["role"] for expert in configured]
+        if self.current is None or self.current.active_experts is None:
+            return roles
+        return [role for role in self.current.active_experts if role in roles]
+
+    def _attach_saved_tools(self) -> None:
+        if self.current is None or not self.current.active_tools:
+            return
+
+        attached = {tool.name for tool in self.engine.tools}
+        tools = []
+        loaded = []
+        for name in self.current.active_tools:
+            try:
+                tool = get_tool(name)
+            except KeyError as error:
+                print(f"Warning: {error}")
+                continue
+            if tool.name in attached:
+                print(f"Warning: tool '{name}' conflicts with an attached tool.")
+                continue
+            attached.add(tool.name)
+            tools.append(tool)
+            loaded.append(name)
+
+        if loaded != self.current.active_tools:
+            self.current.active_tools = loaded
+            self.current.save_meta()
+        if tools:
+            self.engine.register_tools(tools)
+
+    def list_tools(self) -> Dict[str, Any]:
+        active = list(self.current.active_tools) if self.current else []
+        return {"registered": list_tool_names(), "active": active}
+
+    def add_tool(self, name: str) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+        if name not in list_tool_names():
+            raise KeyError(f"Tool '{name}' is not registered.")
+        if name in self.current.active_tools:
+            return
+
+        tool = get_tool(name)
+        if isinstance(self.engine, SmolEngine):
+            if any(existing.name == tool.name for existing in self.engine.tools):
+                raise ValueError(f"Tool '{tool.name}' is already attached.")
+            self.engine.register_tools([tool])
+        self.current.active_tools = [*self.current.active_tools, name]
+        self.current.save_meta()
+
+    def remove_tool(self, name: str) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+        if name not in self.current.active_tools:
+            return
+
+        if isinstance(self.engine, SmolEngine):
+            try:
+                tool_name = get_tool(name).name
+            except KeyError:
+                tool_name = name
+            self.engine.unregister_tools([tool_name])
+        self.current.active_tools = [
+            item for item in self.current.active_tools if item != name
+        ]
+        self.current.save_meta()
+
+    def list_experts(self) -> List[Dict[str, Any]]:
+        if self.current is None:
+            return []
+
+        configured = get_experts_config(CONFIG)
+        active = set(self._active_expert_roles(configured))
+        experts = []
+        for expert in configured:
+            role = expert["role"]
+            override = self.current.expert_overrides.get(role, {})
+            experts.append(
+                {
+                    "role": role,
+                    "name": expert.get("name") or role,
+                    "active": role in active,
+                    "allow_tools": override.get(
+                        "allow_tools", expert.get("allow_tools", False)
+                    ),
+                    "tools": list(
+                        override.get("tools", expert.get("tools", []))
+                    ),
+                    "configured_tools": list(expert.get("tools", [])),
+                }
+            )
+        return experts
+
+    def enable_expert(self, role: str) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+
+        configured = {
+            expert["role"]: expert for expert in get_experts_config(CONFIG)
+        }
+        if role not in configured:
+            raise KeyError(f"Expert '{role}' is not configured.")
+
+        active = self._active_expert_roles()
+        if role in active:
+            return
+
+        tool = build_expert_tool(
+            role,
+            configured[role],
+            self.model_label,
+            get_agent_config(CONFIG)["agent_type"],
+            self.current.expert_overrides,
+        )
+        if isinstance(self.engine, SmolEngine):
+            self.engine.register_tools([tool])
+        self.current.active_experts = [*active, role]
+        self.current.save_meta()
+
+    def disable_expert(self, role: str) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+
+        active = self._active_expert_roles()
+        if role not in active:
+            return
+
+        if isinstance(self.engine, SmolEngine):
+            self.engine.unregister_tools([expert_tool_name(role)])
+        self.current.active_experts = [item for item in active if item != role]
+        self.current.save_meta()
+
+    def set_expert_tools(self, role: str, names: List[str]) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+
+        configured = {
+            expert["role"]: expert for expert in get_experts_config(CONFIG)
+        }
+        if role not in configured:
+            raise KeyError(f"Expert '{role}' is not configured.")
+
+        names = list(dict.fromkeys(name for name in names if name))
+        unknown = sorted(set(names) - set(list_tool_names()))
+        if unknown:
+            raise KeyError(
+                f"Unknown tool(s) for expert '{role}': " + ", ".join(unknown)
+            )
+
+        override = self.current.expert_overrides.setdefault(role, {})
+        override["allow_tools"] = bool(names)
+        override["tools"] = list(names)
+        self.current.save_meta()
 
     def run(self, task: str) -> str:
         if self.current is None:
@@ -262,6 +434,9 @@ class SessionManager:
             model,
             max_summary_tokens=int(
                 compression.get("max_summary_tokens", 1200)
+            ),
+            max_transcript_tokens=int(
+                compression.get("max_transcript_tokens", 6000)
             ),
         )
         return self._compressor
