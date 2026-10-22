@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ..paths import ensure_user_config, user_config_path
+
 DEFAULT_CONFIG_FILE_PATH = Path(__file__).resolve().parent / "config.json"
 CONFIG_PATH_ENV = "AVOCADO_CONFIG_PATH"
 
@@ -24,7 +26,9 @@ class ConfigError(ValueError):
 
 def _resolve_config_path() -> Path:
     override = os.getenv(CONFIG_PATH_ENV)
-    return Path(override).expanduser() if override else DEFAULT_CONFIG_FILE_PATH
+    if override:
+        return Path(override).expanduser()
+    return ensure_user_config(DEFAULT_CONFIG_FILE_PATH)
 
 
 CONFIG_FILE_PATH = _resolve_config_path()
@@ -54,6 +58,13 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         for key in ("agent_name", "agent_type", "max_steps"):
             if agent_config.get(key) in (None, ""):
                 errors.append(f"'agent_config.{key}' is required.")
+        if agent_config.get("agent_type") not in {None, "chat", "code", "tool"}:
+            errors.append(
+                "'agent_config.agent_type' must be 'chat', 'code' or 'tool'."
+            )
+        system_prompt = agent_config.get("system_prompt")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            errors.append("'agent_config.system_prompt' must be a string.")
         imports = agent_config.get("additional_authorized_imports", [])
         if not isinstance(imports, list):
             errors.append(
@@ -99,16 +110,36 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                         "'agent_config.memory.compression.max_transcript_tokens' "
                         "must be a positive integer."
                     )
+                prompt = compression.get("prompt")
+                if prompt is not None:
+                    if not isinstance(prompt, str) or not prompt.strip():
+                        errors.append(
+                            "'agent_config.memory.compression.prompt' must be "
+                            "a non-empty string."
+                        )
+                    else:
+                        missing = [
+                            placeholder
+                            for placeholder in (
+                                "{max_tokens}",
+                                "{memory}",
+                                "{transcript}",
+                            )
+                            if placeholder not in prompt
+                        ]
+                        if missing:
+                            errors.append(
+                                "'agent_config.memory.compression.prompt' is "
+                                "missing placeholders: " + ", ".join(missing)
+                            )
 
         sessions = agent_config.get("sessions", {})
         if not isinstance(sessions, dict):
             errors.append("'agent_config.sessions' must be an object.")
         else:
-            root = sessions.get("root", "avocado_sessions")
-            if not isinstance(root, str) or not root:
-                errors.append(
-                    "'agent_config.sessions.root' must be a non-empty string."
-                )
+            root = sessions.get("root", "")
+            if not isinstance(root, str):
+                errors.append("'agent_config.sessions.root' must be a string.")
 
     settings = config.get("settings")
     if not isinstance(settings, dict):
@@ -161,6 +192,31 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             if label in seen_labels:
                 errors.append(f"Duplicate model label '{label}'.")
             seen_labels.add(label)
+
+            for flag in ("supports_code_loop", "supports_tool_calling"):
+                if flag in model and not isinstance(model[flag], bool):
+                    errors.append(f"'{model_prefix}.{flag}' must be a boolean.")
+            model_agent_type = model.get("agent_type")
+            if model_agent_type is not None and model_agent_type not in {
+                "chat",
+                "code",
+                "tool",
+            }:
+                errors.append(
+                    f"'{model_prefix}.agent_type' must be 'chat', 'code' or 'tool'."
+                )
+
+    if isinstance(agent_config, dict):
+        default_model = agent_config.get("default_model", "")
+        if (
+            isinstance(default_model, str)
+            and default_model.strip()
+            and default_model.strip().lower() not in seen_labels
+        ):
+            errors.append(
+                "'agent_config.default_model' references unknown model "
+                f"'{default_model}'."
+            )
 
     memory = (
         config.get("agent_config", {}).get("memory", {})
@@ -219,8 +275,15 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             errors.append(f"'{prefix}.description' must be a string.")
 
         agent_type = expert.get("agent_type")
-        if agent_type is not None and agent_type not in {"code", "tool"}:
-            errors.append(f"'{prefix}.agent_type' must be 'code' or 'tool'.")
+        if agent_type is not None and agent_type not in {"chat", "code", "tool"}:
+            errors.append(
+                f"'{prefix}.agent_type' must be 'chat', 'code' or 'tool'."
+            )
+
+        for key in ("expertise", "system_prompt"):
+            value = expert.get(key)
+            if value is not None and not isinstance(value, str):
+                errors.append(f"'{prefix}.{key}' must be a string.")
 
         allow_tools = expert.get("allow_tools")
         if allow_tools is not None and not isinstance(allow_tools, bool):
@@ -251,16 +314,28 @@ CONFIG = validate_config(load_config())
 PROJECT_NAME = CONFIG["project_name"]
 
 
+def get_model_capabilities(model_cfg: Dict[str, Any]) -> Dict[str, bool]:
+    """Return the model's tool-loop capabilities."""
+    return {
+        "supports_tool_calling": bool(
+            model_cfg.get("supports_tool_calling", True)
+        ),
+        "supports_code_loop": bool(model_cfg.get("supports_code_loop", True)),
+    }
+
+
 def get_available_models(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return every configured model as a flat, label-addressable list."""
     available: List[Dict[str, Any]] = []
     for provider in config.get("settings", {}).get("providers", []):
         for model_cfg in provider.get("models", []):
+            capabilities = get_model_capabilities(model_cfg)
             available.append(
                 {
                     "label": f"{provider['name']}/{model_cfg['name']}",
                     "provider": provider,
                     "model": model_cfg,
+                    **capabilities,
                 }
             )
     return available
@@ -303,3 +378,13 @@ def get_sessions_config(config: Dict[str, Any] = CONFIG) -> Dict[str, Any]:
 def get_default_model(config: Dict[str, Any] = CONFIG) -> str:
     """Return the configured default model label, if any."""
     return config.get("agent_config", {}).get("default_model", "")
+
+
+def get_compression_prompt(config: Dict[str, Any] = CONFIG) -> str:
+    """Return the configured compression prompt, if any."""
+    return (
+        config.get("agent_config", {})
+        .get("memory", {})
+        .get("compression", {})
+        .get("prompt", "")
+    )
