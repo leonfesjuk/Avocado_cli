@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from ..config.config_loader import CONFIG, get_sessions_config
 from ..memory.plan import default_plan, utc_now
+from ..paths import sessions_root as default_sessions_root
 
 
 def _slugify(value: str) -> str:
@@ -233,8 +234,13 @@ class SessionStore:
     """Create, load and list session directories under a configured root."""
 
     def __init__(self, root: Optional[Path] = None) -> None:
-        configured_root = get_sessions_config(CONFIG).get("root", "avocado_sessions")
-        self.root = Path(root or configured_root).expanduser()
+        configured_root = get_sessions_config(CONFIG).get("root", "")
+        if root is not None:
+            self.root = Path(root).expanduser()
+        elif configured_root:
+            self.root = Path(configured_root).expanduser()
+        else:
+            self.root = default_sessions_root()
         if not self.root.is_absolute():
             self.root = Path.cwd() / self.root
 
