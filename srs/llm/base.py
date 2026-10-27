@@ -22,6 +22,7 @@ class BaseEngine(ABC):
         self.model: Optional[Any] = None
         self.tools: List[Any] = []
         self.experts: Dict[str, Any] = {}
+        self.supports_tools = True
 
     @abstractmethod
     def set_model(self, model: Any) -> None:
@@ -43,6 +44,14 @@ class BaseEngine(ABC):
     @abstractmethod
     def get_native_agent(self) -> Optional[Any]:
         """Return the underlying framework agent, if any."""
+
+    def context_tokens(self) -> int:
+        """Return an estimate of the tokens currently held by the engine."""
+        return 0
+
+    def history_tokens(self) -> int:
+        """Return an estimate of the tokens used by conversation steps."""
+        return 0
 
     def generate(
         self,
