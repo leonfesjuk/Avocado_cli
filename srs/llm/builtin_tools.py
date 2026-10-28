@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -100,6 +101,167 @@ class ListDirTool(Tool):
         )
 
 
+class EditFileTool(Tool):
+    name = "edit_file"
+    description = "Replace text in a UTF-8 file, optionally replacing every match."
+    inputs = {
+        "path": {
+            "type": "string",
+            "description": "Path to the file to edit.",
+        },
+        "old": {
+            "type": "string",
+            "description": "Exact text to replace.",
+        },
+        "new": {
+            "type": "string",
+            "description": "Replacement text.",
+        },
+        "replace_all": {
+            "type": "boolean",
+            "description": "Replace every occurrence. Defaults to false.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def forward(
+        self,
+        path: str,
+        old: str,
+        new: str,
+        replace_all: bool = False,
+    ) -> str:
+        file_path = Path(path).expanduser()
+        if not old:
+            return "edit_file failed: 'old' must not be empty"
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except OSError as error:
+            return f"edit_file failed: {error}"
+
+        count = content.count(old)
+        if count == 0:
+            return f"edit_file failed: text not found in {file_path}"
+        if replace_all:
+            updated = content.replace(old, new)
+            replaced = count
+        else:
+            updated = content.replace(old, new, 1)
+            replaced = 1
+        try:
+            file_path.write_text(updated, encoding="utf-8")
+        except OSError as error:
+            return f"edit_file failed: {error}"
+        return f"Replaced {replaced} occurrence(s) in {file_path}"
+
+
+def _protected_path(path: Path) -> bool:
+    resolved = path.resolve()
+    cwd = Path.cwd().resolve()
+    return (
+        resolved == Path("/")
+        or resolved == Path.home().resolve()
+        or resolved == cwd
+        or resolved in cwd.parents
+    )
+
+
+class DeletePathTool(Tool):
+    name = "delete_path"
+    description = "Delete a file or directory. Refuses protected system paths."
+    inputs = {
+        "path": {
+            "type": "string",
+            "description": "File or directory to delete.",
+        },
+        "recursive": {
+            "type": "boolean",
+            "description": "Delete a non-empty directory recursively. Defaults to false.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def forward(self, path: str, recursive: bool = False) -> str:
+        target = Path(path).expanduser()
+        if _protected_path(target):
+            return f"delete_path failed: refusing to delete protected path {target}"
+        try:
+            if target.is_dir() and not target.is_symlink():
+                if recursive:
+                    shutil.rmtree(target)
+                else:
+                    target.rmdir()
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            else:
+                return f"delete_path failed: {target} does not exist"
+        except OSError as error:
+            return f"delete_path failed: {error}"
+        return f"Deleted {target}"
+
+
+class MovePathTool(Tool):
+    name = "move_path"
+    description = "Move or rename a file or directory."
+    inputs = {
+        "source": {"type": "string", "description": "Source path."},
+        "destination": {"type": "string", "description": "Destination path."},
+    }
+    output_type = "string"
+
+    def forward(self, source: str, destination: str) -> str:
+        src = Path(source).expanduser()
+        dst = Path(destination).expanduser()
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        except OSError as error:
+            return f"move_path failed: {error}"
+        return f"Moved {src} to {dst}"
+
+
+class CopyPathTool(Tool):
+    name = "copy_path"
+    description = "Copy a file or directory."
+    inputs = {
+        "source": {"type": "string", "description": "Source path."},
+        "destination": {"type": "string", "description": "Destination path."},
+    }
+    output_type = "string"
+
+    def forward(self, source: str, destination: str) -> str:
+        src = Path(source).expanduser()
+        dst = Path(destination).expanduser()
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        except OSError as error:
+            return f"copy_path failed: {error}"
+        return f"Copied {src} to {dst}"
+
+
+class MakeDirTool(Tool):
+    name = "make_dir"
+    description = "Create a directory, including missing parents."
+    inputs = {
+        "path": {"type": "string", "description": "Directory path to create."},
+    }
+    output_type = "string"
+
+    def forward(self, path: str) -> str:
+        directory = Path(path).expanduser()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            return f"make_dir failed: {error}"
+        return f"Created directory {directory}"
+
+
 class HttpGetTool(Tool):
     name = "http_get"
     description = "Fetch a URL over HTTP(S) and return the response body as text."
@@ -164,9 +326,9 @@ class RunShellTool(Tool):
                 timeout=int(timeout),
             )
         except subprocess.TimeoutExpired:
-            return f"run_shell timed out after {timeout} seconds"
+            return f"{self.name} timed out after {timeout} seconds"
         except OSError as error:
-            return f"run_shell failed: {error}"
+            return f"{self.name} failed: {error}"
 
         output = completed.stdout
         if completed.stderr:
@@ -179,10 +341,24 @@ class RunShellTool(Tool):
         return f"exit_code: {completed.returncode}\n{output}"
 
 
+class BashTool(RunShellTool):
+    name = "bash"
+    description = (
+        "Run a bash command and return stdout, stderr and the exit code. "
+        "Use it only for commands you understand."
+    )
+
+
 BUILTIN_TOOLS = {
     "read_file": ReadFileTool,
     "write_file": WriteFileTool,
+    "edit_file": EditFileTool,
     "list_dir": ListDirTool,
+    "delete_path": DeletePathTool,
+    "move_path": MovePathTool,
+    "copy_path": CopyPathTool,
+    "make_dir": MakeDirTool,
     "http_get": HttpGetTool,
     "run_shell": RunShellTool,
+    "bash": BashTool,
 }

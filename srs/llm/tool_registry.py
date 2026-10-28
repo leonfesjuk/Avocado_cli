@@ -46,6 +46,13 @@ def list_tool_names() -> List[str]:
     return sorted(TOOL_REGISTRY)
 
 
+def list_builtin_tool_names() -> List[str]:
+    """Return the packaged built-in tool names, excluding user additions."""
+    from .builtin_tools import BUILTIN_TOOLS
+
+    return sorted(BUILTIN_TOOLS)
+
+
 def register_builtin_tools() -> None:
     """Load the default tools once, without replacing user registrations."""
     from .builtin_tools import BUILTIN_TOOLS
