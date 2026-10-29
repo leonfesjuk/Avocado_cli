@@ -6,6 +6,30 @@ from ..config.config_loader import ConfigError, get_defaults
 from ..secrets.secrets_get import get_secret
 
 
+def _validate_api_key(api_key: str, provider: Dict[str, Any]) -> str:
+    provider_id = provider.get("id", "unknown")
+    env_name = provider.get("api_key_env", "")
+    source = f"'{env_name}'" if env_name else "the provider config"
+
+    api_key = api_key.strip()
+    if not api_key:
+        raise ConfigError(
+            f"API key for provider '{provider_id}' is empty. "
+            f"Set a valid key in {source} or the OS keyring."
+        )
+    if not api_key.isascii():
+        raise ConfigError(
+            f"API key for provider '{provider_id}' contains non-ASCII characters. "
+            f"Set a valid ASCII key in {source} or the OS keyring."
+        )
+    if any(character.isspace() for character in api_key):
+        raise ConfigError(
+            f"API key for provider '{provider_id}' contains whitespace or newlines. "
+            f"Set a valid key in {source} or the OS keyring."
+        )
+    return api_key
+
+
 def _resolve_api_key(provider: Dict[str, Any]) -> str:
     env_name = provider.get("api_key_env", "")
     api_key = get_secret(env_name, required=False) if env_name else None
@@ -21,7 +45,7 @@ def _resolve_api_key(provider: Dict[str, Any]) -> str:
             f"API key for provider '{provider.get('id')}' is not set. "
             f"Set the '{env_name}' environment variable or store it in the keyring."
         )
-    return api_key
+    return _validate_api_key(api_key, provider)
 
 
 def _resolve_base_url(
