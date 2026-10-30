@@ -2,8 +2,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from smolagents import CodeAgent, ToolCallingAgent
 from smolagents.memory import ActionStep, PlanningStep, SystemPromptStep
+from smolagents.monitoring import AgentLogger, LogLevel
 
 from ..config.config_loader import CONFIG, get_agent_config, get_memory_config
+from ..memory.token_counter import estimate_tokens
 from .base import BaseEngine
 
 
@@ -15,6 +17,7 @@ class SmolEngine(BaseEngine):
         name: str,
         description: str = "",
         agent_type: str = "code",
+        logger: Optional[AgentLogger] = None,
     ) -> None:
         super().__init__(name=name, description=description, engine_type="smol")
         self.agent_type = agent_type
@@ -22,6 +25,7 @@ class SmolEngine(BaseEngine):
         self._instructions = ""
         self._step_callback: Optional[Callable[[Any], None]] = None
         self._session_started = False
+        self._logger = logger or AgentLogger(level=LogLevel.OFF)
 
     def set_model(self, model: Any) -> None:
         self.model = model
@@ -107,6 +111,43 @@ class SmolEngine(BaseEngine):
     def get_native_agent(self) -> Optional[Any]:
         return self._agent
 
+    def context_tokens(self) -> int:
+        if self._agent is None:
+            return estimate_tokens(self._instructions)
+        total = estimate_tokens(getattr(self._agent, "system_prompt", ""))
+        return total + self.history_tokens()
+
+    def history_tokens(self) -> int:
+        if self._agent is None:
+            return 0
+        return sum(
+            self._step_tokens(step)
+            for step in getattr(self._agent.memory, "steps", [])
+        )
+
+    @staticmethod
+    def _step_tokens(step: Any) -> int:
+        if isinstance(step, SystemPromptStep):
+            text = getattr(step, "system_prompt", "")
+        elif isinstance(step, PlanningStep):
+            text = getattr(step, "plan", "")
+        elif isinstance(step, ActionStep):
+            text = "\n".join(
+                str(value)
+                for value in (
+                    getattr(step, "model_output", ""),
+                    getattr(step, "observations", ""),
+                    getattr(step, "error", ""),
+                    getattr(step, "tool_calls", ""),
+                )
+                if value
+            )
+        else:
+            text = getattr(step, "task", None) or getattr(
+                step, "output", ""
+            )
+        return estimate_tokens(str(text or ""))
+
     def _should_reset(self) -> bool:
         mode = get_memory_config(CONFIG).get("mode", "session")
         if mode == "stateless":
@@ -150,15 +191,15 @@ class SmolEngine(BaseEngine):
             "model": self.model,
             "max_steps": self._max_steps(),
             "instructions": self._instructions or None,
+            "logger": self._logger,
         }
-        verbosity = get_agent_config(CONFIG).get("verbosity_level")
-        if verbosity is not None:
-            kwargs["verbosity_level"] = verbosity
         authorized_imports = get_agent_config(CONFIG).get(
             "additional_authorized_imports", []
         )
-        if self.agent_type == "code" and authorized_imports:
-            kwargs["additional_authorized_imports"] = list(authorized_imports)
+        if self.agent_type == "code":
+            kwargs["code_block_tags"] = "markdown"
+            if authorized_imports:
+                kwargs["additional_authorized_imports"] = list(authorized_imports)
         if self._step_callback is not None:
             kwargs["step_callbacks"] = {
                 ActionStep: self._step_callback,
