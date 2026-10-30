@@ -1,13 +1,18 @@
 from typing import Any, Dict, List, Optional
 
+from smolagents.monitoring import AgentLogger, LogLevel
+
 from ..config.config_loader import (
     CONFIG,
     get_agent_config,
     get_experts_config,
+    get_model_capabilities,
     resolve_model_entry,
 )
 from .base import BaseEngine
-from .expert_tools import ExpertTool, expert_tool_name
+from .chat_engine import ChatEngine
+from .expert_tools import ExpertTool, expert_tool_name, last_expert_calls
+from .logger import AvocadoAgentLogger
 from .model_factory import create_model
 from .smol_engine import SmolEngine
 from .tool_registry import build_tools, list_tool_names
@@ -15,13 +20,21 @@ from .tool_registry import build_tools, list_tool_names
 RESERVED_TOOL_NAMES = {"update_plan"}
 
 
-def _supports_code_loop(model_cfg: Dict[str, Any]) -> bool:
-    """Whether a model can drive smolagents' code-only loop.
+def _effective_agent_type(model_cfg: Dict[str, Any], requested: str) -> str:
+    """Pick the best supported loop for a model and requested agent type."""
+    if requested == "chat":
+        return "chat"
 
-    Some providers reject a code-only loop for specific models. The flag is
-    configured per model with ``supports_code_loop``.
-    """
-    return bool(model_cfg.get("supports_code_loop", True))
+    capabilities = get_model_capabilities(model_cfg)
+    if requested == "code" and capabilities["supports_code_loop"]:
+        return "code"
+    if requested == "tool" and capabilities["supports_tool_calling"]:
+        return "tool"
+    if capabilities["supports_code_loop"]:
+        return "code"
+    if capabilities["supports_tool_calling"]:
+        return "tool"
+    return "chat"
 
 
 def _build_engine(
@@ -29,19 +42,21 @@ def _build_engine(
     name: str,
     description: str,
     agent_type: str,
-) -> SmolEngine:
+    logger: Optional[AgentLogger] = None,
+) -> BaseEngine:
     entry = resolve_model_entry(CONFIG, model_label)
     provider, model_cfg = entry["provider"], entry["model"]
 
-    effective_type = model_cfg.get("agent_type", agent_type)
-    if effective_type == "code" and not _supports_code_loop(model_cfg):
-        effective_type = "tool"
-
-    engine = SmolEngine(
-        name=name,
-        description=description,
-        agent_type=effective_type,
-    )
+    effective_type = _effective_agent_type(model_cfg, agent_type)
+    if effective_type == "chat":
+        engine: BaseEngine = ChatEngine(name=name, description=description)
+    else:
+        engine = SmolEngine(
+            name=name,
+            description=description,
+            agent_type=effective_type,
+            logger=logger,
+        )
     engine.set_model(create_model(provider, model_cfg))
     return engine
 
@@ -65,15 +80,57 @@ def build_expert_tool(
         )
         tool_names = override.get("tools", expert_cfg.get("tools", []))
 
+        requested_type = expert_cfg.get("agent_type", default_agent_type)
+        if not allow_tools:
+            requested_type = "chat"
+        elif requested_type == "chat":
+            requested_type = "tool"
+
         expert = _build_engine(
             expert_cfg.get("model", main_model_label),
             display_name,
             description,
-            expert_cfg.get("agent_type", default_agent_type),
+            requested_type,
+            logger=AgentLogger(level=LogLevel.OFF),
         )
         if allow_tools:
+            if not getattr(expert, "supports_tools", True):
+                raise ValueError(
+                    f"Expert '{role}' model does not support tools. "
+                    "Choose a tool-capable model or disable expert tools."
+                )
             expert.register_tools(build_tools(tool_names))
-        return expert.run(task, reset=True)
+
+        system_prompt = expert_cfg.get("system_prompt")
+        if not system_prompt:
+            system_prompt = f"You are {display_name}. {description}".strip()
+        if hasattr(expert, "set_instructions"):
+            expert.set_instructions(system_prompt)
+
+        try:
+            response = expert.run(task, reset=True)
+            last_expert_calls.append(
+                {
+                    "role": role,
+                    "task": task,
+                    "response": response,
+                    "error": None,
+                }
+            )
+            return response
+        except Exception as error:
+            last_expert_calls.append(
+                {
+                    "role": role,
+                    "task": task,
+                    "response": None,
+                    "error": str(error),
+                }
+            )
+            return (
+                f"Expert {display_name} unavailable: {error}. "
+                "I will answer without the expert."
+            )
 
     return ExpertTool(
         expert_tool_name(role),
@@ -102,18 +159,39 @@ def build_agent(
     agent_type: Optional[str] = None,
     expert_names: Optional[List[str]] = None,
     expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+    tools_enabled: Optional[bool] = None,
 ) -> BaseEngine:
     """Build the main engine and optionally attach configured experts.
 
-    Experts are created with the model referenced by their ``model`` field or,
-    when absent, with the main model. Their ``allow_tools``/``tools`` config
-    controls whether they receive tools.
+    ``tools_enabled`` controls whether the main model gets an agent loop at
+    all. When it is false the result is a stateless :class:`ChatEngine`.
     """
     agent_config = get_agent_config(CONFIG)
     agent_name = agent_name if agent_name is not None else agent_config["agent_name"]
     agent_type = agent_type if agent_type is not None else agent_config["agent_type"]
+    if tools_enabled is None:
+        tools_enabled = bool(expert_names)
 
-    main_engine = _build_engine(main_model_label, agent_name, "", agent_type)
+    if not tools_enabled:
+        return _build_engine(
+            main_model_label,
+            agent_name,
+            "",
+            "chat",
+        )
+
+    main_engine = _build_engine(
+        main_model_label,
+        agent_name,
+        "",
+        agent_type,
+        logger=AvocadoAgentLogger(),
+    )
+    if not main_engine.supports_tools:
+        raise ValueError(
+            f"Model '{main_model_label}' does not support tools. "
+            "Switch to a tool-capable model before enabling tools or experts."
+        )
 
     if not expert_names:
         return main_engine

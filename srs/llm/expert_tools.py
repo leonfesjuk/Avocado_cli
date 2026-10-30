@@ -1,6 +1,6 @@
 import keyword
 import re
-from typing import Callable
+from typing import Any, Callable, Dict, List
 
 from smolagents import Tool
 
@@ -13,6 +13,10 @@ def expert_tool_name(role: str) -> str:
     if name[0].isdigit() or keyword.iskeyword(name):
         name = f"expert_{name}"
     return name
+
+
+last_expert_calls: List[Dict[str, Any]] = []
+"""Recent expert invocations for UI rendering. Filled by ExpertTool.forward."""
 
 
 class ExpertTool(Tool):
