@@ -1,3 +1,4 @@
+import json
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List, Optional
 
@@ -5,22 +6,29 @@ from smolagents.memory import ActionStep, PlanningStep
 
 from ..config.config_loader import (
     CONFIG,
-    get_agent_config,
     get_available_models,
+    get_compression_prompt,
     get_default_model,
     get_experts_config,
     get_memory_config,
+    get_model_capabilities,
     get_sessions_config,
     resolve_model_entry,
 )
-from ..llm.agent_builder import build_agent, build_expert_tool
-from ..llm.expert_tools import expert_tool_name
+from ..llm.agent_builder import build_agent
+from ..llm.chat_engine import ChatEngine
+from ..llm.expert_tools import expert_tool_name, last_expert_calls
 from ..llm.model_factory import create_model
 from ..llm.smol_engine import SmolEngine
-from ..llm.tool_registry import get_tool, list_tool_names
+from ..llm.tool_registry import (
+    get_tool,
+    list_builtin_tool_names,
+    list_tool_names,
+)
 from ..memory.compression import MemoryCompressor
 from ..memory.plan import UpdatePlanTool, default_plan, merge_plan, utc_now
 from ..memory.prompt import build_instructions
+from ..memory.token_counter import estimate_tokens
 from .store import Session, SessionStore
 
 
@@ -49,6 +57,7 @@ class SessionManager:
         compress_on_exit: Optional[bool] = None,
     ) -> None:
         self.store = store or SessionStore()
+        self._explicit_model = model_label is not None
         self.model_label = model_label or get_default_model(CONFIG)
         if not self.model_label:
             available = get_available_models(CONFIG)
@@ -73,6 +82,8 @@ class SessionManager:
         self.engine: Optional[Any] = None
         self._compressor: Optional[MemoryCompressor] = None
         self.last_warning = ""
+        self.last_compression: Dict[str, Any] = {}
+        self.last_expert_calls: List[Dict[str, Any]] = []
 
     @property
     def session(self) -> Optional[Session]:
@@ -95,7 +106,16 @@ class SessionManager:
             if not create_if_missing:
                 raise KeyError("No sessions exist.")
             session = self.store.create(model_label=self.model_label)
+        elif self._explicit_model:
+            session.model = self.model_label
+            session.save_meta()
+        elif session.model:
+            self.model_label = session.model
+        else:
+            session.model = self.model_label
+            session.save_meta()
 
+        self._explicit_model = False
         self.current = session
         self._activate_session()
         return session
@@ -114,41 +134,60 @@ class SessionManager:
     def _prepare_to_leave(self, compress: bool) -> Dict[str, Any]:
         warning = ""
         compressed = False
+        compression: Dict[str, Any] = {}
         if self.current is not None:
             if compress and self.current.read_steps():
                 try:
                     self.compress()
                     compressed = True
+                    compression = dict(self.last_compression)
                 except Exception as error:
                     warning = str(error)
             self.save()
-        return {"compressed": compressed, "warning": warning}
+        return {
+            "compressed": compressed,
+            "compression": compression,
+            "warning": warning,
+        }
 
     def _activate_session(self) -> None:
         if self.current is None:
             raise RuntimeError("No session is open.")
+        self.last_compression = {}
 
         configured = get_experts_config(CONFIG)
         expert_names = self._active_expert_roles(configured)
-        saved = self.current.active_experts
-        if saved is not None and expert_names != saved:
+        if self.current.active_experts != expert_names:
             self.current.active_experts = expert_names
             self.current.save_meta()
 
+        use_tools = bool(self.current.active_tools or expert_names)
         self.engine = build_agent(
             main_model_label=self.model_label,
             expert_names=expert_names,
             expert_overrides=self.current.expert_overrides,
+            tools_enabled=use_tools,
         )
         if isinstance(self.engine, SmolEngine):
             if self.auto_save_steps:
                 self.engine.register_step_callback(self._on_step)
             self._attach_saved_tools()
             self.engine.register_tools([UpdatePlanTool(self.current)])
+        if hasattr(self.engine, "set_instructions"):
             self.engine.set_instructions(
-                build_instructions(self.current, warn_uncompressed=True)
+                self._build_instructions(self.current, warn_uncompressed=True)
             )
+        if hasattr(self.engine, "reset_memory"):
             self.engine.reset_memory()
+
+    def _build_instructions(
+        self, session: Session, warn_uncompressed: bool = False
+    ) -> str:
+        return build_instructions(
+            session,
+            warn_uncompressed=warn_uncompressed,
+            experts=self._active_expert_roles(),
+        )
 
     def _active_expert_roles(
         self,
@@ -158,8 +197,14 @@ class SessionManager:
             configured = get_experts_config(CONFIG)
         roles = [expert["role"] for expert in configured]
         if self.current is None or self.current.active_experts is None:
-            return roles
-        return [role for role in self.current.active_experts if role in roles]
+            return []
+        return list(
+            dict.fromkeys(
+                role
+                for role in self.current.active_experts
+                if role in roles
+            )
+        )
 
     def _attach_saved_tools(self) -> None:
         if self.current is None or not self.current.active_tools:
@@ -189,7 +234,33 @@ class SessionManager:
 
     def list_tools(self) -> Dict[str, Any]:
         active = list(self.current.active_tools) if self.current else []
-        return {"registered": list_tool_names(), "active": active}
+        return {
+            "registered": list_tool_names(),
+            "builtin": list_builtin_tool_names(),
+            "active": active,
+        }
+
+    def _model_supports_tools(self, model_label: Optional[str] = None) -> bool:
+        entry = resolve_model_entry(CONFIG, model_label or self.model_label)
+        capabilities = get_model_capabilities(entry["model"])
+        return bool(
+            capabilities["supports_code_loop"]
+            or capabilities["supports_tool_calling"]
+        )
+
+    def _ensure_tool_capable(self, model_label: Optional[str] = None) -> None:
+        label = model_label or self.model_label
+        if not self._model_supports_tools(label):
+            raise ValueError(
+                f"Model '{label}' is chat-only and cannot use tools or experts. "
+                "Switch to a tool-capable model first."
+            )
+
+    def _expert_tool_names(self) -> set:
+        return {
+            expert_tool_name(role)
+            for role in self._active_expert_roles()
+        }
 
     def add_tool(self, name: str) -> None:
         if self.current is None:
@@ -200,12 +271,45 @@ class SessionManager:
             return
 
         tool = get_tool(name)
-        if isinstance(self.engine, SmolEngine):
-            if any(existing.name == tool.name for existing in self.engine.tools):
-                raise ValueError(f"Tool '{tool.name}' is already attached.")
-            self.engine.register_tools([tool])
+        if tool.name in self._expert_tool_names():
+            raise ValueError(
+                f"Tool '{tool.name}' conflicts with an active expert tool."
+            )
+        self._ensure_tool_capable()
+
         self.current.active_tools = [*self.current.active_tools, name]
         self.current.save_meta()
+        self._activate_session()
+
+    def add_all_tools(self) -> Dict[str, List[str]]:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+
+        added: List[str] = []
+        skipped: List[str] = []
+        expert_names = self._expert_tool_names()
+        active = set(self.current.active_tools)
+        for name in list_builtin_tool_names():
+            if name in active:
+                skipped.append(name)
+                continue
+            tool = get_tool(name)
+            if tool.name in expert_names:
+                skipped.append(name)
+                continue
+            added.append(name)
+
+        if not added:
+            return {"added": [], "skipped": skipped}
+
+        self._ensure_tool_capable()
+        self.current.active_tools = [
+            *self.current.active_tools,
+            *added,
+        ]
+        self.current.save_meta()
+        self._activate_session()
+        return {"added": added, "skipped": skipped}
 
     def remove_tool(self, name: str) -> None:
         if self.current is None:
@@ -213,16 +317,20 @@ class SessionManager:
         if name not in self.current.active_tools:
             return
 
-        if isinstance(self.engine, SmolEngine):
-            try:
-                tool_name = get_tool(name).name
-            except KeyError:
-                tool_name = name
-            self.engine.unregister_tools([tool_name])
         self.current.active_tools = [
             item for item in self.current.active_tools if item != name
         ]
         self.current.save_meta()
+        self._activate_session()
+
+    def clear_tools(self) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+        if not self.current.active_tools:
+            return
+        self.current.active_tools = []
+        self.current.save_meta()
+        self._activate_session()
 
     def list_experts(self) -> List[Dict[str, Any]]:
         if self.current is None:
@@ -238,6 +346,9 @@ class SessionManager:
                 {
                     "role": role,
                     "name": expert.get("name") or role,
+                    "description": expert.get("description", ""),
+                    "expertise": expert.get("expertise", ""),
+                    "model": expert.get("model") or self.model_label,
                     "active": role in active,
                     "allow_tools": override.get(
                         "allow_tools", expert.get("allow_tools", False)
@@ -264,17 +375,10 @@ class SessionManager:
         if role in active:
             return
 
-        tool = build_expert_tool(
-            role,
-            configured[role],
-            self.model_label,
-            get_agent_config(CONFIG)["agent_type"],
-            self.current.expert_overrides,
-        )
-        if isinstance(self.engine, SmolEngine):
-            self.engine.register_tools([tool])
+        self._ensure_tool_capable()
         self.current.active_experts = [*active, role]
         self.current.save_meta()
+        self._activate_session()
 
     def disable_expert(self, role: str) -> None:
         if self.current is None:
@@ -284,10 +388,31 @@ class SessionManager:
         if role not in active:
             return
 
-        if isinstance(self.engine, SmolEngine):
-            self.engine.unregister_tools([expert_tool_name(role)])
         self.current.active_experts = [item for item in active if item != role]
         self.current.save_meta()
+        self._activate_session()
+
+    def enable_all_experts(self) -> List[str]:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+
+        roles = [expert["role"] for expert in get_experts_config(CONFIG)]
+        if not roles:
+            return []
+        self._ensure_tool_capable()
+        self.current.active_experts = roles
+        self.current.save_meta()
+        self._activate_session()
+        return roles
+
+    def disable_all_experts(self) -> None:
+        if self.current is None:
+            raise RuntimeError("No session is open.")
+        if not self.current.active_experts:
+            return
+        self.current.active_experts = []
+        self.current.save_meta()
+        self._activate_session()
 
     def set_expert_tools(self, role: str, names: List[str]) -> None:
         if self.current is None:
@@ -305,11 +430,17 @@ class SessionManager:
             raise KeyError(
                 f"Unknown tool(s) for expert '{role}': " + ", ".join(unknown)
             )
+        if names:
+            self._ensure_tool_capable(
+                configured[role].get("model") or self.model_label
+            )
 
         override = self.current.expert_overrides.setdefault(role, {})
         override["allow_tools"] = bool(names)
         override["tools"] = list(names)
         self.current.save_meta()
+        if role in self._active_expert_roles():
+            self._activate_session()
 
     def run(self, task: str) -> str:
         if self.current is None:
@@ -337,11 +468,13 @@ class SessionManager:
             {"kind": "TaskStep", "task": task, "timestamp": utc_now()}
         )
         if hasattr(self.engine, "set_instructions"):
-            self.engine.set_instructions(build_instructions(session))
+            self.engine.set_instructions(self._build_instructions(session))
 
+        last_expert_calls.clear()
         try:
             result = self.engine.run(task)
         except Exception as error:
+            self.last_expert_calls = list(last_expert_calls)
             plan = merge_plan(
                 session.load_plan(),
                 status="error",
@@ -358,6 +491,7 @@ class SessionManager:
             session.save_meta()
             raise
 
+        self.last_expert_calls = list(last_expert_calls)
         plan = merge_plan(
             session.load_plan(),
             status="idle",
@@ -430,6 +564,10 @@ class SessionManager:
         label = compression.get("model") or self.model_label
         entry = resolve_model_entry(CONFIG, label)
         model = create_model(entry["provider"], entry["model"])
+        prompt = get_compression_prompt(CONFIG)
+        compressor_kwargs = {}
+        if prompt:
+            compressor_kwargs["prompt_template"] = prompt
         self._compressor = MemoryCompressor(
             model,
             max_summary_tokens=int(
@@ -438,33 +576,84 @@ class SessionManager:
             max_transcript_tokens=int(
                 compression.get("max_transcript_tokens", 6000)
             ),
+            **compressor_kwargs,
         )
         return self._compressor
 
     def compress(self) -> str:
         if self.current is None:
             raise RuntimeError("No session is open.")
-        if not self.current.read_steps():
+        steps = self.current.read_steps()
+        if not steps:
+            self.last_compression = {}
             return self.current.load_memory()
 
+        before = self.context_usage()
         summary = self._get_compressor().compress(self.current)
         if isinstance(self.engine, SmolEngine):
             self.engine.recreate_agent()
         if self.engine is not None and hasattr(self.engine, "set_instructions"):
-            self.engine.set_instructions(build_instructions(self.current))
+            self.engine.set_instructions(self._build_instructions(self.current))
+        after = self.context_usage()
+
+        meta = self.current.load_memory_meta()
+        delta_tokens = before["used"] - after["used"]
+        meta.update(
+            {
+                "context_before_tokens": before["used"],
+                "context_after_tokens": after["used"],
+                "context_delta_tokens": delta_tokens,
+                "context_delta_percent": (
+                    round(delta_tokens / before["used"] * 100, 1)
+                    if before["used"]
+                    else 0.0
+                ),
+                "context_limit": after["limit"],
+                "context_model": after["model"],
+                "context_memory_before": before["memory_tokens"],
+                "context_memory_after": after["memory_tokens"],
+                "context_history_before": before["history_tokens"],
+                "context_history_after": after["history_tokens"],
+                "context_raw_before": before["raw_history_tokens"],
+                "context_raw_after": after["raw_history_tokens"],
+            }
+        )
+        self.current.save_memory(self.current.load_memory(), meta)
         self.current.save_meta()
+
+        self.last_compression = {
+            "context_before": before,
+            "context_after": after,
+            "context_delta_tokens": delta_tokens,
+            "context_delta_percent": (
+                round(delta_tokens / before["used"] * 100, 1)
+                if before["used"]
+                else 0.0
+            ),
+            "summary_tokens": meta.get("estimated_tokens", 0),
+            "source_tokens": meta.get("source_tokens", 0),
+            "raw_tokens": meta.get("raw_tokens", 0),
+            "journal_saved_tokens": meta.get("saved_tokens", 0),
+            "journal_saved_percent": meta.get("saved_percent", 0.0),
+        }
         return summary
 
     def switch(self, identifier: str) -> Dict[str, Any]:
         leave = self._prepare_to_leave(self.compress_on_switch)
 
         session = self.store.get(identifier)
+        if session.model:
+            self.model_label = session.model
+        else:
+            session.model = self.model_label
+            session.save_meta()
         self.current = session
         self._activate_session()
         self.last_warning = leave["warning"]
         return {
             "session": session,
             "compressed": leave["compressed"],
+            "compression": leave.get("compression", {}),
             "warning": leave["warning"],
         }
 
@@ -479,7 +668,7 @@ class SessionManager:
         if isinstance(self.engine, SmolEngine):
             self.engine.reset_memory()
         if self.engine is not None and hasattr(self.engine, "set_instructions"):
-            self.engine.set_instructions(build_instructions(self.current))
+            self.engine.set_instructions(self._build_instructions(self.current))
         self.current.save_meta()
 
     def save(self) -> None:
@@ -517,6 +706,113 @@ class SessionManager:
         if self.current is not None and session.session_id == self.current.session_id:
             raise ValueError("Cannot delete the active session.")
         self.store.delete(identifier)
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        models = []
+        for entry in get_available_models(CONFIG):
+            capabilities = get_model_capabilities(entry["model"])
+            chat_only = not (
+                capabilities["supports_code_loop"]
+                or capabilities["supports_tool_calling"]
+            )
+            models.append(
+                {
+                    "label": entry["label"],
+                    "current": entry["label"].lower()
+                    == self.model_label.lower(),
+                    "chat_only": chat_only,
+                    "supports_code_loop": capabilities["supports_code_loop"],
+                    "supports_tool_calling": capabilities[
+                        "supports_tool_calling"
+                    ],
+                }
+            )
+        return models
+
+    def set_model(self, label: str) -> None:
+        entry = resolve_model_entry(CONFIG, label)
+        active_experts = self._active_expert_roles()
+        active_tools = self.current.active_tools if self.current else []
+        if active_tools or active_experts:
+            self._ensure_tool_capable(entry["label"])
+        self.model_label = entry["label"]
+        if self.current is not None:
+            self.current.model = self.model_label
+            self.current.save_meta()
+            self._activate_session()
+
+    def context_usage(self) -> Dict[str, Any]:
+        empty = {
+            "model": self.model_label or "",
+            "limit": 0,
+            "used": 0,
+            "available": 0,
+            "percent": 0.0,
+            "prompt_tokens": 0,
+            "instructions_tokens": 0,
+            "history_tokens": 0,
+            "memory_tokens": 0,
+            "plan_tokens": 0,
+            "raw_history_tokens": 0,
+            "raw_steps": 0,
+            "last_input_tokens": 0,
+        }
+        if self.current is None:
+            return empty
+
+        entry = resolve_model_entry(CONFIG, self.model_label)
+        limit = int(entry["model"].get("context", 0) or 0)
+
+        instructions = self._build_instructions(
+            self.current, warn_uncompressed=True
+        )
+        instructions_tokens = estimate_tokens(instructions)
+
+        if self.engine is not None:
+            used = self.engine.context_tokens()
+            history = self.engine.history_tokens()
+        else:
+            used = instructions_tokens
+            history = 0
+
+        prompt_tokens = max(0, used - history)
+        memory_tokens = estimate_tokens(self.current.load_memory())
+        plan_tokens = estimate_tokens(
+            json.dumps(self.current.load_plan(), ensure_ascii=False)
+        )
+
+        steps = self.current.read_steps()
+        raw_history_tokens = (
+            estimate_tokens(json.dumps(steps, ensure_ascii=False, default=str))
+            if steps
+            else 0
+        )
+
+        last_input_tokens = 0
+        for record in reversed(steps):
+            usage = record.get("token_usage")
+            if isinstance(usage, dict):
+                value = usage.get("input_tokens") or usage.get("prompt_tokens")
+                if isinstance(value, int) and value > 0:
+                    last_input_tokens = value
+                    break
+
+        percent = round(used / limit * 100, 1) if limit else 0.0
+        return {
+            "model": self.model_label,
+            "limit": limit,
+            "used": used,
+            "available": max(0, limit - used) if limit else 0,
+            "percent": percent,
+            "prompt_tokens": prompt_tokens,
+            "instructions_tokens": instructions_tokens,
+            "history_tokens": history,
+            "memory_tokens": memory_tokens,
+            "plan_tokens": plan_tokens,
+            "raw_history_tokens": raw_history_tokens,
+            "raw_steps": len(steps),
+            "last_input_tokens": last_input_tokens,
+        }
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         return [session.summary() for session in self.store.list()]
