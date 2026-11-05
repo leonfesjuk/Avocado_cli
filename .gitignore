@@ -12,3 +12,5 @@ __pycache__/
 dist/
 build/
 avocado_sessions/
+.ruff_cache/
+.coverage
