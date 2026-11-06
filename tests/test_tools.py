@@ -225,10 +225,10 @@ class ManagerToolTests(unittest.TestCase):
             compress_on_exit=False,
         )
 
-    def test_add_and_remove_tool_updates_engine(self):
+    def test_add_and_remove_tool_updates_active_tools(self):
         manager = self._manager()
         manager.open()
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
 
         manager.add_tool("test_echo")
         self.assertIn("test_echo", manager.session.active_tools)
@@ -238,7 +238,7 @@ class ManagerToolTests(unittest.TestCase):
         manager.remove_tool("test_echo")
         self.assertNotIn("test_echo", manager.session.active_tools)
         self.assertNotIn("echo", [tool.name for tool in manager.engine.tools])
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
 
     def test_active_tool_survives_restart(self):
         manager = self._manager()
@@ -293,7 +293,7 @@ class ManagerToolTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             _handle_command(manager, "/tools clear")
         self.assertEqual(manager.session.active_tools, [])
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
 
     def test_chat_only_model_blocks_tools(self):
         manager = self._manager()

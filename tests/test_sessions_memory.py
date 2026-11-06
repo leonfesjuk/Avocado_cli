@@ -446,7 +446,7 @@ class ManagerTests(unittest.TestCase):
         self.store = SessionStore(root=Path(self.tempdir.name) / "sessions")
         self.model_patch = patch(
             "srs.llm.agent_builder.create_model",
-            side_effect=lambda *args, **kwargs: FakeChatModel(),
+            side_effect=lambda *args, **kwargs: FakeCodeModel(),
         )
         self.model_patch.start()
 
@@ -465,14 +465,14 @@ class ManagerTests(unittest.TestCase):
     def test_run_persists_plan_and_journal(self):
         manager = self._manager()
         manager.open()
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
         self.assertEqual(manager.run("first task"), "done")
         self.assertEqual(manager.run("second task"), "done")
 
         session = manager.session
         plan = session.load_plan()
         self.assertEqual(plan["goal"], "first task")
-        self.assertEqual(plan["current_step"], 0)
+        self.assertGreaterEqual(plan["current_step"], 1)
         kinds = [step["kind"] for step in session.read_steps()]
         self.assertIn("TaskStep", kinds)
         self.assertIn("FinalAnswerStep", kinds)
@@ -488,7 +488,7 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("Summary", summary)
         self.assertIn("Summary", manager.session.load_memory())
         self.assertEqual(manager.session.read_steps(), [])
-        self.assertIsNone(manager.engine.get_native_agent())
+        self.assertIsNotNone(manager.engine.get_native_agent())
 
         manager.reset()
         self.assertEqual(manager.session.load_plan()["goal"], "")

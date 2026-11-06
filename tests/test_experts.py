@@ -191,7 +191,7 @@ class ManagerExpertTests(unittest.TestCase):
 
         experts = self._experts(manager)
         self.assertFalse(experts["code_reviewer"]["active"])
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
 
         manager.enable_expert("code_reviewer")
         self.assertTrue(self._experts(manager)["code_reviewer"]["active"])
@@ -201,7 +201,7 @@ class ManagerExpertTests(unittest.TestCase):
 
         manager.disable_expert("code_reviewer")
         self.assertFalse(self._experts(manager)["code_reviewer"]["active"])
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
 
     def test_expert_delegation_guidance_follows_active_experts(self):
         manager = self._manager()
@@ -312,7 +312,7 @@ class ManagerExpertTests(unittest.TestCase):
             _handle_command(manager, "/experts disable *")
         experts = self._experts(manager)
         self.assertFalse(any(item["active"] for item in experts.values()))
-        self.assertEqual(manager.engine.engine_type, "chat")
+        self.assertEqual(manager.engine.engine_type, "smol")
 
     def test_expert_listing_includes_expertise_and_model(self):
         manager = self._manager()

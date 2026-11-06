@@ -319,16 +319,40 @@ class LoggerTests(unittest.TestCase):
 
 
 class BuilderTests(unittest.TestCase):
-    def test_build_agent_without_tools_is_chat_engine(self):
+    def test_build_agent_without_tools_uses_code_loop_for_capable_model(self):
         with patch(
             "srs.llm.agent_builder.create_model",
             side_effect=lambda *a, **k: FakeModel(),
         ):
             agent = build_agent(main_model_label="Groq/qwen/qwen3.8-27b")
 
+        self.assertIsInstance(agent, SmolEngine)
+        self.assertEqual(agent.engine_type, "smol")
+        self.assertEqual(agent.agent_type, "code")
+
+    def test_build_agent_without_tools_is_chat_engine_for_chat_only_model(self):
+        with patch(
+            "srs.llm.agent_builder.create_model",
+            side_effect=lambda *a, **k: FakeModel(),
+        ):
+            agent = build_agent(main_model_label="Groq/openai/gpt-oss-20b")
+
         self.assertIsInstance(agent, ChatEngine)
         self.assertEqual(agent.engine_type, "chat")
         self.assertFalse(agent.supports_tools)
+
+    def test_build_agent_with_tools_disabled_is_chat_engine(self):
+        with patch(
+            "srs.llm.agent_builder.create_model",
+            side_effect=lambda *a, **k: FakeModel(),
+        ):
+            agent = build_agent(
+                main_model_label="Groq/qwen/qwen3.8-27b",
+                tools_enabled=False,
+            )
+
+        self.assertIsInstance(agent, ChatEngine)
+        self.assertEqual(agent.engine_type, "chat")
 
     def test_model_code_loop_flag_is_used(self):
         with patch(

@@ -169,12 +169,12 @@ class SessionManager:
             self.current.active_experts = expert_names
             self.current.save_meta()
 
-        use_tools = bool(self.current.active_tools or expert_names)
+        has_tools = bool(self.current.active_tools or expert_names)
         self.engine = build_agent(
             main_model_label=self.model_label,
             expert_names=expert_names,
             expert_overrides=self.current.expert_overrides,
-            tools_enabled=use_tools,
+            tools_enabled=True if has_tools else None,
         )
         if isinstance(self.engine, SmolEngine):
             if self.auto_save_steps:

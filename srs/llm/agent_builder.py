@@ -163,16 +163,23 @@ def build_agent(
 ) -> BaseEngine:
     """Build the main engine and optionally attach configured experts.
 
-    ``tools_enabled`` controls whether the main model gets an agent loop at
-    all. When it is false the result is a stateless :class:`ChatEngine`.
+    ``tools_enabled`` separates loop selection from tool availability:
+
+    * ``None`` (default) picks the best loop for the model and leaves tools
+      optional.
+    * ``False`` forces a stateless :class:`ChatEngine`.
+    * ``True`` requires a tool-capable loop and raises when the model is
+      chat-only.
     """
     agent_config = get_agent_config(CONFIG)
     agent_name = agent_name if agent_name is not None else agent_config["agent_name"]
     agent_type = agent_type if agent_type is not None else agent_config["agent_type"]
-    if tools_enabled is None:
-        tools_enabled = bool(expert_names)
 
-    if not tools_enabled:
+    if tools_enabled is False:
+        if expert_names:
+            raise ValueError(
+                "Experts require an agent loop; pass tools_enabled=None or True."
+            )
         return _build_engine(
             main_model_label,
             agent_name,
@@ -187,7 +194,8 @@ def build_agent(
         agent_type,
         logger=AvocadoAgentLogger(),
     )
-    if not main_engine.supports_tools:
+    requires_loop = tools_enabled is True or bool(expert_names)
+    if requires_loop and not main_engine.supports_tools:
         raise ValueError(
             f"Model '{main_model_label}' does not support tools. "
             "Switch to a tool-capable model before enabling tools or experts."
