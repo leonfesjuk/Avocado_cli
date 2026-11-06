@@ -7,6 +7,7 @@ from unittest.mock import patch
 from smolagents import ChatMessage, MessageRole, Model, TokenUsage
 
 from srs.llm.agent_builder import build_agent
+from srs.llm.chat_engine import ChatEngine
 from srs.llm.expert_tools import ExpertTool
 from srs.llm.smol_engine import SmolEngine
 from srs.memory.compression import MemoryCompressor
@@ -30,7 +31,28 @@ class FakeCodeModel(Model):
     ) -> ChatMessage:
         return ChatMessage(
             role=MessageRole.ASSISTANT,
-            content='<code>\nfinal_answer("done")\n</code>',
+            content='```python\nfinal_answer("done")\n```',
+            token_usage=TokenUsage(input_tokens=0, output_tokens=0),
+        )
+
+
+class FakeChatModel(Model):
+    def __init__(self) -> None:
+        super().__init__(model_id="fake-chat")
+        self.calls = []
+
+    def generate(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ) -> ChatMessage:
+        self.calls.append(list(messages))
+        return ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="done",
             token_usage=TokenUsage(input_tokens=0, output_tokens=0),
         )
 
@@ -103,6 +125,28 @@ class SessionStoreTests(unittest.TestCase):
         self.store.delete(session.session_id)
         self.assertFalse(session.path.exists())
         self.assertEqual(self.store.list(), [])
+
+
+class ChatEngineTests(unittest.TestCase):
+    def test_chat_engine_is_stateless(self):
+        model = FakeChatModel()
+        engine = ChatEngine(name="chat")
+        engine.set_model(model)
+        engine.set_instructions("system")
+
+        self.assertEqual(engine.run("first"), "done")
+        self.assertEqual(engine.run("second"), "done")
+
+        self.assertEqual(len(model.calls), 2)
+        for messages in model.calls:
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[0].role, MessageRole.SYSTEM)
+            self.assertEqual(messages[1].role, MessageRole.USER)
+
+    def test_chat_engine_rejects_tools(self):
+        engine = ChatEngine(name="chat")
+        with self.assertRaises(ValueError):
+            engine.register_tools([object()])
 
 
 class EngineMemoryTests(unittest.TestCase):
@@ -224,6 +268,26 @@ class CompressionTests(unittest.TestCase):
         self.assertNotIn("event 0", prompt)
         self.assertIn("older events omitted", prompt)
 
+    def test_custom_compression_prompt_is_used(self):
+        model = FakeSummaryModel()
+        template = (
+            "custom {max_tokens} {plan} {memory} {transcript}"
+        )
+
+        MemoryCompressor(
+            model,
+            max_summary_tokens=100,
+            prompt_template=template,
+        ).compress(self.session)
+
+        self.assertTrue(model.prompts[0].startswith("custom 100"))
+
+    def test_default_compression_prompt_excludes_plan(self):
+        model = FakeSummaryModel()
+        MemoryCompressor(model, max_summary_tokens=100).compress(self.session)
+        self.assertNotIn("{plan}", model.prompts[0])
+        self.assertNotIn("## Current plan", model.prompts[0])
+
     def test_archive_exists_before_memory_is_saved(self):
         observed = {}
         original_save = self.session.save_memory
@@ -240,6 +304,93 @@ class CompressionTests(unittest.TestCase):
         )
 
         self.assertTrue(observed["archive"])
+        meta = self.session.load_memory_meta()
+        self.assertIn("source_tokens", meta)
+        self.assertIn("saved_tokens", meta)
+        self.assertIn("saved_percent", meta)
+
+
+class VerboseCodeModel(Model):
+    def __init__(self) -> None:
+        super().__init__(model_id="fake-verbose-code")
+
+    def generate(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ) -> ChatMessage:
+        padding = "# " + "x" * 50000 + "\n"
+        return ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=f"```python\n{padding}final_answer(\"done\")\n```",
+            token_usage=TokenUsage(input_tokens=0, output_tokens=0),
+        )
+
+
+class ContextUsageTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.store = SessionStore(root=Path(self.tempdir.name) / "sessions")
+        self.model_patch = patch(
+            "srs.llm.agent_builder.create_model",
+            side_effect=lambda *args, **kwargs: VerboseCodeModel(),
+        )
+        self.model_patch.start()
+
+    def tearDown(self):
+        self.model_patch.stop()
+        self.tempdir.cleanup()
+
+    def _manager(self):
+        return SessionManager(
+            store=self.store,
+            model_label="Google/gemini-3.8-flash",
+            compress_on_switch=False,
+            compress_on_exit=False,
+        )
+
+    def test_context_usage_reports_limit_and_history(self):
+        manager = self._manager()
+        manager.open()
+        manager.add_tool("read_file")
+        self.assertEqual(manager.engine.engine_type, "smol")
+        manager.run("inspect the repo")
+
+        usage = manager.context_usage()
+
+        self.assertEqual(usage["model"], "Google/gemini-3.8-flash")
+        self.assertGreater(usage["limit"], 0)
+        self.assertGreater(usage["used"], 0)
+        self.assertGreater(usage["history_tokens"], 0)
+        self.assertEqual(usage["raw_steps"], 3)
+        self.assertGreaterEqual(usage["percent"], 0)
+
+    def test_compress_reports_context_before_after(self):
+        manager = self._manager()
+        manager.open()
+        manager.add_tool("read_file")
+        manager._compressor = MemoryCompressor(FakeSummaryModel(), 100)
+        manager.run("inspect the repo")
+
+        summary = manager.compress()
+
+        self.assertEqual(summary, "## Summary\n- goal: remember the session")
+        self.assertEqual(manager.session.read_steps(), [])
+        self.assertEqual(
+            manager.engine.get_native_agent().memory.steps, []
+        )
+
+        stats = manager.last_compression
+        self.assertIn("context_before", stats)
+        self.assertIn("context_after", stats)
+        self.assertGreater(stats["context_before"]["history_tokens"], 0)
+        self.assertEqual(stats["context_after"]["history_tokens"], 0)
+        self.assertEqual(stats["context_after"]["raw_history_tokens"], 0)
+        self.assertGreater(stats["context_delta_tokens"], 0)
+        self.assertGreater(stats["context_delta_percent"], 0)
 
 
 class PromptAndPlanTests(unittest.TestCase):
@@ -259,6 +410,18 @@ class PromptAndPlanTests(unittest.TestCase):
 
         self.assertIn("finish the task", instructions)
         self.assertIn("remember this fact", instructions)
+        self.assertIn("You are Avocado", instructions)
+
+    def test_expert_guidance_only_when_experts_are_active(self):
+        without_experts = build_instructions(self.session)
+        with_experts = build_instructions(
+            self.session, experts=["code_reviewer"]
+        )
+
+        self.assertNotIn("Delegating to experts", without_experts)
+        self.assertIn("Delegating to experts", with_experts)
+        self.assertIn("only the context", with_experts)
+        self.assertIn("Do not dump the whole conversation", with_experts)
 
     def test_update_plan_tool_updates_semantic_fields(self):
         tool = UpdatePlanTool(self.session)
@@ -283,7 +446,7 @@ class ManagerTests(unittest.TestCase):
         self.store = SessionStore(root=Path(self.tempdir.name) / "sessions")
         self.model_patch = patch(
             "srs.llm.agent_builder.create_model",
-            side_effect=lambda *args, **kwargs: FakeCodeModel(),
+            side_effect=lambda *args, **kwargs: FakeChatModel(),
         )
         self.model_patch.start()
 
@@ -291,10 +454,10 @@ class ManagerTests(unittest.TestCase):
         self.model_patch.stop()
         self.tempdir.cleanup()
 
-    def _manager(self):
+    def _manager(self, model_label="OpenAI/gpt-4o"):
         return SessionManager(
             store=self.store,
-            model_label="OpenAI/gpt-4o",
+            model_label=model_label,
             compress_on_switch=False,
             compress_on_exit=False,
         )
@@ -302,13 +465,14 @@ class ManagerTests(unittest.TestCase):
     def test_run_persists_plan_and_journal(self):
         manager = self._manager()
         manager.open()
+        self.assertEqual(manager.engine.engine_type, "chat")
         self.assertEqual(manager.run("first task"), "done")
         self.assertEqual(manager.run("second task"), "done")
 
         session = manager.session
         plan = session.load_plan()
         self.assertEqual(plan["goal"], "first task")
-        self.assertEqual(plan["current_step"], 2)
+        self.assertEqual(plan["current_step"], 0)
         kinds = [step["kind"] for step in session.read_steps()]
         self.assertIn("TaskStep", kinds)
         self.assertIn("FinalAnswerStep", kinds)
@@ -324,7 +488,7 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("Summary", summary)
         self.assertIn("Summary", manager.session.load_memory())
         self.assertEqual(manager.session.read_steps(), [])
-        self.assertEqual(manager.engine.get_native_agent().memory.steps, [])
+        self.assertIsNone(manager.engine.get_native_agent())
 
         manager.reset()
         self.assertEqual(manager.session.load_plan()["goal"], "")
@@ -332,6 +496,33 @@ class ManagerTests(unittest.TestCase):
 
         manager.reset(hard=True)
         self.assertEqual(manager.session.load_memory(), "")
+
+    def test_last_session_model_is_the_default(self):
+        manager = self._manager(model_label="Google/gemini-3.8-flash")
+        manager.open()
+        manager.run("hello")
+        manager.close(compress=False)
+
+        restarted = SessionManager(
+            store=self.store,
+            compress_on_switch=False,
+            compress_on_exit=False,
+        )
+        restarted.open()
+        self.assertEqual(restarted.model_label, "Google/gemini-3.8-flash")
+
+    def test_set_model_persists_and_blocks_chat_only(self):
+        manager = self._manager()
+        manager.open()
+
+        manager.set_model("Google/gemini-3.8-flash")
+        self.assertEqual(manager.session.model, "Google/gemini-3.8-flash")
+
+        manager.add_tool("read_file")
+        self.assertEqual(manager.engine.engine_type, "smol")
+        with self.assertRaises(ValueError):
+            manager.set_model("Groq/openai/gpt-oss-20b")
+        self.assertEqual(manager.session.model, "Google/gemini-3.8-flash")
 
     def test_switch_loads_other_session(self):
         manager = self._manager()
