@@ -9,8 +9,14 @@ from smolagents import Tool
 
 from srs.cli import _handle_command
 from srs.llm.builtin_tools import (
+    BashTool,
+    CopyPathTool,
+    DeletePathTool,
+    EditFileTool,
     HttpGetTool,
     ListDirTool,
+    MakeDirTool,
+    MovePathTool,
     ReadFileTool,
     RunShellTool,
     WriteFileTool,
@@ -45,9 +51,15 @@ class RegistryTests(unittest.TestCase):
             {
                 "read_file",
                 "write_file",
+                "edit_file",
                 "list_dir",
+                "delete_path",
+                "move_path",
+                "copy_path",
+                "make_dir",
                 "http_get",
                 "run_shell",
+                "bash",
             }
             <= names
         )
@@ -105,12 +117,52 @@ class FileToolTests(unittest.TestCase):
         result = ReadFileTool().forward(str(self.root / "missing.txt"))
         self.assertIn("read_file failed", result)
 
+    def test_edit_file_replaces_one_or_all(self):
+        path = self.root / "edit.txt"
+        path.write_text("one one two", encoding="utf-8")
+
+        result = EditFileTool().forward(str(path), "one", "1")
+        self.assertIn("Replaced 1", result)
+        self.assertEqual(path.read_text(encoding="utf-8"), "1 one two")
+
+        EditFileTool().forward(str(path), "one", "1", replace_all=True)
+        self.assertEqual(path.read_text(encoding="utf-8"), "1 1 two")
+
+        missing = EditFileTool().forward(str(path), "absent", "x")
+        self.assertIn("not found", missing)
+
+    def test_copy_move_make_dir_and_delete(self):
+        source = self.root / "source.txt"
+        source.write_text("payload", encoding="utf-8")
+        copied = self.root / "nested" / "copy.txt"
+        moved = self.root / "nested" / "moved.txt"
+        directory = self.root / "created" / "deep"
+
+        self.assertIn("Copied", CopyPathTool().forward(str(source), str(copied)))
+        self.assertEqual(copied.read_text(encoding="utf-8"), "payload")
+        self.assertIn("Moved", MovePathTool().forward(str(copied), str(moved)))
+        self.assertTrue(moved.exists())
+        self.assertFalse(copied.exists())
+        self.assertIn("Created", MakeDirTool().forward(str(directory)))
+        self.assertTrue(directory.is_dir())
+        self.assertIn("Deleted", DeletePathTool().forward(str(moved)))
+        self.assertFalse(moved.exists())
+
+    def test_delete_path_refuses_protected_paths(self):
+        result = DeletePathTool().forward(str(Path.cwd()))
+        self.assertIn("refusing", result)
+
 
 class ShellToolTests(unittest.TestCase):
     def test_run_shell_returns_output_and_code(self):
         result = RunShellTool().forward("printf hello")
         self.assertIn("exit_code: 0", result)
         self.assertIn("hello", result)
+
+    def test_bash_alias_works(self):
+        result = BashTool().forward("printf bash-ok")
+        self.assertEqual(BashTool.name, "bash")
+        self.assertIn("bash-ok", result)
 
 
 class EngineToolTests(unittest.TestCase):
@@ -176,14 +228,17 @@ class ManagerToolTests(unittest.TestCase):
     def test_add_and_remove_tool_updates_engine(self):
         manager = self._manager()
         manager.open()
+        self.assertEqual(manager.engine.engine_type, "chat")
 
         manager.add_tool("test_echo")
         self.assertIn("test_echo", manager.session.active_tools)
         self.assertIn("echo", [tool.name for tool in manager.engine.tools])
+        self.assertEqual(manager.engine.engine_type, "smol")
 
         manager.remove_tool("test_echo")
         self.assertNotIn("test_echo", manager.session.active_tools)
         self.assertNotIn("echo", [tool.name for tool in manager.engine.tools])
+        self.assertEqual(manager.engine.engine_type, "chat")
 
     def test_active_tool_survives_restart(self):
         manager = self._manager()
@@ -222,6 +277,31 @@ class ManagerToolTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             _handle_command(manager, "/tools remove test_echo")
         self.assertNotIn("test_echo", manager.session.active_tools)
+
+    def test_add_all_builtin_tools_and_clear(self):
+        manager = self._manager()
+        manager.open()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _handle_command(manager, "/tools add *")
+        self.assertIn("bash", manager.session.active_tools)
+        self.assertIn("edit_file", manager.session.active_tools)
+        self.assertIn("Added:", output.getvalue())
+        self.assertEqual(manager.engine.engine_type, "smol")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _handle_command(manager, "/tools clear")
+        self.assertEqual(manager.session.active_tools, [])
+        self.assertEqual(manager.engine.engine_type, "chat")
+
+    def test_chat_only_model_blocks_tools(self):
+        manager = self._manager()
+        manager.set_model("Groq/openai/gpt-oss-20b")
+        manager.open()
+
+        with self.assertRaises(ValueError):
+            manager.add_tool("read_file")
 
 
 if __name__ == "__main__":

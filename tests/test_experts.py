@@ -76,10 +76,16 @@ class ExpertConfigTests(unittest.TestCase):
         self.assertIn("unknown model", str(context.exception))
 
     def test_unknown_agent_type_is_rejected(self):
-        config = _config_with_experts([_expert(agent_type="chat")])
+        config = _config_with_experts([_expert(agent_type="invalid")])
         with self.assertRaises(ConfigError) as context:
             validate_config(config)
         self.assertIn("agent_type", str(context.exception))
+
+    def test_chat_agent_type_and_expertise_are_allowed(self):
+        config = _config_with_experts(
+            [_expert(agent_type="chat", expertise="security")]
+        )
+        self.assertIs(validate_config(config), config)
 
 
 class ExpertToolTests(unittest.TestCase):
@@ -105,16 +111,22 @@ class ExpertToolTests(unittest.TestCase):
                 return f"result:{task}"
 
         recorded = RecordingExpert()
+        requested_types = []
         overrides = {"code_reviewer": {"allow_tools": False, "tools": []}}
         register_tool("test_echo", EchoTool)
+
+        def fake_build(*args, **kwargs):
+            requested_types.append(args[3])
+            return recorded
+
         try:
             with patch(
                 "srs.llm.agent_builder._build_engine",
-                return_value=recorded,
+                side_effect=fake_build,
             ):
                 tool = build_expert_tool(
                     "code_reviewer",
-                    _expert(),
+                    _expert(agent_type="chat"),
                     "Test/model",
                     "code",
                     overrides,
@@ -130,6 +142,8 @@ class ExpertToolTests(unittest.TestCase):
                 self.assertEqual([item.name for item in recorded.tools], ["echo"])
         finally:
             TOOL_REGISTRY.pop("test_echo", None)
+
+        self.assertEqual(requested_types, ["chat", "tool"])
 
     def test_builder_rejects_unknown_expert(self):
         with patch(
@@ -171,26 +185,39 @@ class ManagerExpertTests(unittest.TestCase):
     def _experts(self, manager):
         return {item["role"]: item for item in manager.list_experts()}
 
-    def test_experts_start_active_and_can_be_toggled(self):
+    def test_experts_start_inactive_and_can_be_toggled(self):
         manager = self._manager()
         manager.open()
 
         experts = self._experts(manager)
-        self.assertTrue(experts["code_reviewer"]["active"])
+        self.assertFalse(experts["code_reviewer"]["active"])
+        self.assertEqual(manager.engine.engine_type, "chat")
+
+        manager.enable_expert("code_reviewer")
+        self.assertTrue(self._experts(manager)["code_reviewer"]["active"])
         self.assertIn(
             "code_reviewer", [tool.name for tool in manager.engine.tools]
         )
 
         manager.disable_expert("code_reviewer")
         self.assertFalse(self._experts(manager)["code_reviewer"]["active"])
+        self.assertEqual(manager.engine.engine_type, "chat")
+
+    def test_expert_delegation_guidance_follows_active_experts(self):
+        manager = self._manager()
+        manager.open()
+
         self.assertNotIn(
-            "code_reviewer", [tool.name for tool in manager.engine.tools]
+            "Delegating to experts", manager.engine._instructions
         )
 
         manager.enable_expert("code_reviewer")
-        self.assertTrue(self._experts(manager)["code_reviewer"]["active"])
-        self.assertIn(
-            "code_reviewer", [tool.name for tool in manager.engine.tools]
+        self.assertIn("Delegating to experts", manager.engine._instructions)
+        self.assertIn("only the context", manager.engine._instructions)
+
+        manager.disable_expert("code_reviewer")
+        self.assertNotIn(
+            "Delegating to experts", manager.engine._instructions
         )
 
     def test_expert_tools_and_state_survive_restart(self):
@@ -219,9 +246,20 @@ class ManagerExpertTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             manager.set_expert_tools("code_reviewer", ["missing_tool"])
 
+    def test_set_expert_tools_rebuilds_active_expert(self):
+        manager = self._manager()
+        manager.open()
+        manager.enable_expert("code_reviewer")
+
+        manager.set_expert_tools("code_reviewer", ["test_echo"])
+
+        self.assertTrue(self._experts(manager)["code_reviewer"]["active"])
+        self.assertIn("code_reviewer", manager.engine.experts)
+
     def test_add_tool_rejects_collision_with_expert(self):
         manager = self._manager()
         manager.open()
+        manager.enable_expert("code_reviewer")
         register_tool("code_reviewer", CodeReviewerTool)
 
         with self.assertRaises(ValueError):
@@ -238,12 +276,12 @@ class ManagerExpertTests(unittest.TestCase):
         self.assertIn("allow_tools=False", output.getvalue())
 
         with contextlib.redirect_stdout(io.StringIO()):
-            _handle_command(manager, "/experts disable code_reviewer")
-        self.assertFalse(self._experts(manager)["code_reviewer"]["active"])
-
-        with contextlib.redirect_stdout(io.StringIO()):
             _handle_command(manager, "/experts enable code_reviewer")
         self.assertTrue(self._experts(manager)["code_reviewer"]["active"])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _handle_command(manager, "/experts disable code_reviewer")
+        self.assertFalse(self._experts(manager)["code_reviewer"]["active"])
 
         with contextlib.redirect_stdout(io.StringIO()):
             _handle_command(manager, "/experts tools code_reviewer test_echo")
@@ -256,6 +294,33 @@ class ManagerExpertTests(unittest.TestCase):
         expert = self._experts(manager)["code_reviewer"]
         self.assertFalse(expert["allow_tools"])
         self.assertEqual(expert["tools"], [])
+
+    def test_experts_star_command_toggles_all(self):
+        manager = self._manager()
+        manager.open()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _handle_command(manager, "/experts enable *")
+        experts = self._experts(manager)
+        self.assertTrue(all(item["active"] for item in experts.values()))
+        self.assertIn("code_reviewer", [tool.name for tool in manager.engine.tools])
+        self.assertIn(
+            "logic_specialist", [tool.name for tool in manager.engine.tools]
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            _handle_command(manager, "/experts disable *")
+        experts = self._experts(manager)
+        self.assertFalse(any(item["active"] for item in experts.values()))
+        self.assertEqual(manager.engine.engine_type, "chat")
+
+    def test_expert_listing_includes_expertise_and_model(self):
+        manager = self._manager()
+        manager.open()
+
+        expert = self._experts(manager)["code_reviewer"]
+        self.assertEqual(expert["expertise"], "code review")
+        self.assertEqual(expert["model"], "Groq/qwen/qwen3.8-27b")
 
 
 if __name__ == "__main__":
