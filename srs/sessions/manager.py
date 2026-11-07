@@ -765,6 +765,14 @@ class SessionManager:
         return models
 
     def set_compression_model(self, label: str) -> str:
+        if not label or label.strip().lower() in {"default", "auto", "session"}:
+            self.compression_model_label = self._default_compression_model
+            self._compressor = None
+            if self.current is not None:
+                self.current.compression_model = ""
+                self.current.save_meta()
+            return self.compression_model_label
+
         entry = resolve_model_entry(CONFIG, label)
         self.compression_model_label = entry["label"]
         self._compressor = None

@@ -545,6 +545,23 @@ class ManagerTests(unittest.TestCase):
             restarted.compression_model_label, "Google/gemini-3.8-flash"
         )
 
+    def test_compression_model_can_follow_session_model(self):
+        manager = self._manager()
+        manager.open()
+        manager.set_compression_model("Google/gemini-3.8-flash")
+        manager._default_compression_model = ""
+
+        label = manager.set_compression_model("default")
+
+        self.assertEqual(label, "")
+        self.assertEqual(manager.session.compression_model, "")
+        with patch("srs.sessions.manager.create_model") as create:
+            create.return_value = FakeSummaryModel()
+            manager._get_compressor()
+
+        _, model_cfg = create.call_args.args
+        self.assertEqual(model_cfg["name"], "gpt-4o")
+
     def test_compression_model_is_used_by_compressor(self):
         manager = self._manager()
         manager.open()
