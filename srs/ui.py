@@ -1,11 +1,20 @@
 from typing import Any, Dict, List
 
+from rich import box
 from rich.console import Console
 from rich.markdown import CodeBlock, Markdown
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.text import Text
 from rich.theme import Theme
 
-from .theme import AVOCADO_CODE_THEME, AVOCADO_LIME
+from .theme import (
+    AVOCADO_BORDER,
+    AVOCADO_CODE_THEME,
+    AVOCADO_FAINT,
+    AVOCADO_LIME,
+    AVOCADO_MUTED,
+)
 
 CONSOLE = Console(
     theme=Theme(
@@ -40,20 +49,64 @@ class AvocadoMarkdown(Markdown):
         super().__init__(markup, **kwargs)
 
 
+def render_banner(
+    session: Any,
+    model_label: str,
+    compression_label: str = "",
+) -> None:
+    """Small startup header: brand, session and the active models."""
+    body = Text()
+    body.append("session  ", style=AVOCADO_FAINT)
+    body.append(session.name, style="white")
+    body.append(f"  ({session.session_id})", style=AVOCADO_MUTED)
+    body.append("\n")
+    body.append("model    ", style=AVOCADO_FAINT)
+    body.append(model_label, style="white")
+    body.append("\n")
+    body.append("compress ", style=AVOCADO_FAINT)
+    body.append(
+        compression_label or "follows the session model",
+        style=AVOCADO_MUTED,
+    )
+    CONSOLE.print(
+        Panel(
+            body,
+            title=Text("Avocado", style=f"bold {AVOCADO_LIME}"),
+            border_style=AVOCADO_BORDER,
+            title_align="left",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            expand=False,
+        )
+    )
+
+
+def render_status(message: str) -> None:
+    """Dim, non-essential output such as context counters."""
+    CONSOLE.print(Text(message, style=AVOCADO_MUTED))
+
+
 def render_expert_calls(calls: List[Dict[str, Any]]) -> None:
     if not calls:
         return
     for call in calls:
-        label = Text("Expert:", style=f"bold {AVOCADO_LIME}")
-        CONSOLE.print(label, Text(f" {call['role']}"))
+        header = Text("  ↳ expert", style=AVOCADO_FAINT)
+        header.append(f" · {call['role']}", style=AVOCADO_MUTED)
+        CONSOLE.print(header)
         if call.get("error"):
-            CONSOLE.print(Text(f"Error: {call['error']}", style="red"))
+            CONSOLE.print(
+                Text("    error:  ", style=AVOCADO_FAINT)
+                + Text(str(call["error"]), style="red")
+            )
         else:
-            CONSOLE.print(Text("Task:", style="bold"))
-            CONSOLE.print(Text(call["task"]))
-            CONSOLE.print(Text("Response:", style="bold"))
-            CONSOLE.print(Text(call["response"]))
-        CONSOLE.print()
+            CONSOLE.print(
+                Text("    task:   ", style=AVOCADO_FAINT)
+                + Text(str(call.get("task", "")), style=AVOCADO_MUTED)
+            )
+            CONSOLE.print(
+                Text("    answer: ", style=AVOCADO_FAINT)
+                + Text(str(call.get("response", "")), style=AVOCADO_MUTED)
+            )
 
 
 def _looks_like_markdown(text: str) -> bool:
@@ -70,12 +123,20 @@ def _looks_like_markdown(text: str) -> bool:
 
 
 def render_answer(text: str) -> None:
+    """The final, user-facing answer from the main Avocado model."""
     if not text:
         return
 
-    label = Text("Avocado:", style=f"bold {AVOCADO_LIME}")
+    CONSOLE.print()
+    CONSOLE.print(
+        Rule(
+            Text("Avocado", style=f"bold {AVOCADO_LIME}"),
+            characters="─",
+            style=AVOCADO_BORDER,
+            align="left",
+        )
+    )
     if _looks_like_markdown(text):
-        CONSOLE.print(label)
         CONSOLE.print(AvocadoMarkdown(text))
     else:
-        CONSOLE.print(label + Text(" ") + Text(text))
+        CONSOLE.print(Text(text))

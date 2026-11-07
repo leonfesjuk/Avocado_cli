@@ -14,6 +14,8 @@ from rich.syntax import PygmentsSyntaxTheme
 
 AVOCADO_BORDER = "#568203"
 AVOCADO_LIME = "#B6D94C"
+AVOCADO_MUTED = "grey62"
+AVOCADO_FAINT = "grey46"
 CODE_BACKGROUND = "#2b2b2b"
 
 

@@ -19,13 +19,10 @@ from srs.config.config_loader import (
 from srs.cli import HELP_TEXT
 from srs.llm.agent_builder import build_agent
 from srs.llm.chat_engine import ChatEngine
-from srs.llm.logger import (
-    AVOCADO_BORDER,
-    AVOCADO_LIME,
-    AvocadoAgentLogger,
-)
+from srs.llm.logger import AvocadoAgentLogger
 from srs.llm.model_factory import _resolve_api_key, _resolve_base_url, create_model
 from srs.llm.smol_engine import SmolEngine
+from srs.theme import AVOCADO_FAINT, AVOCADO_MUTED
 
 
 class FakeModel(Model):
@@ -301,24 +298,24 @@ class EngineTests(unittest.TestCase):
 
 
 class LoggerTests(unittest.TestCase):
-    def test_run_panel_uses_avocado_colors(self):
+    def test_run_panel_is_muted(self):
         logger = AvocadoAgentLogger()
 
         with patch.object(logger, "log") as log:
             logger.log_task("task", "model")
 
         panel = log.call_args.args[0]
-        self.assertEqual(panel.border_style, AVOCADO_BORDER)
-        self.assertIn(AVOCADO_LIME, panel.title)
+        self.assertEqual(panel.border_style, AVOCADO_FAINT)
+        self.assertEqual(panel.renderable.style, AVOCADO_MUTED)
 
-    def test_step_rule_uses_lime(self):
+    def test_step_rule_is_muted(self):
         logger = AvocadoAgentLogger()
 
         with patch.object(logger, "log") as log:
             logger.log_rule("Step 1")
 
         rule = log.call_args.args[0]
-        self.assertEqual(rule.style, AVOCADO_LIME)
+        self.assertEqual(rule.style, AVOCADO_FAINT)
 
 
 class BuilderTests(unittest.TestCase):
