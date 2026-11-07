@@ -29,9 +29,10 @@ HELP_TEXT = """Commands:
   /experts tools <role> [tool ...|none]
                         set the tools an expert may use
   /compress             fold the raw step journal into memory.md
+  /compress-model [list]  list models used for memory compression
+  /compress-model <label> set the model used for memory compression
   /reset [--hard]       clear current history; --hard also clears memory
   /context              show estimated context usage and limits
-  /compress             fold the raw step journal into memory.md
   /quit                 save and exit
   /exit                 alias for /quit
 
@@ -69,6 +70,10 @@ def _print_context_details(manager: SessionManager) -> None:
     else:
         budget = f"{_fmt_tokens(stats['used'])} tokens (limit unknown)"
     print(f"Model: {stats['model']}")
+    print(
+        "Compression model: "
+        + (manager.compression_model_label or stats["model"])
+    )
     print(f"Context (est.): {budget}")
     print(f"  system+instructions: {_fmt_tokens(stats['prompt_tokens'])} tokens")
     print(f"  in-memory history:   {_fmt_tokens(stats['history_tokens'])} tokens")
@@ -258,6 +263,14 @@ def _handle_command(manager: SessionManager, line: str) -> bool:
             manager.set_model(label)
             print(f"Model set to {manager.model_label}.")
             _print_context(manager)
+    elif command == "/compress-model":
+        if not args or args[0] == "list":
+            for item in manager.list_compression_models():
+                marker = "*" if item["current"] else " "
+                print(f"{marker} {item['label']}")
+        else:
+            label = manager.set_compression_model(" ".join(args))
+            print(f"Compression model set to {label}.")
     elif command == "/tools":
         action = args[0] if args else "list"
         if action == "list":

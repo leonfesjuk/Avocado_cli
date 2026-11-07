@@ -65,6 +65,10 @@ class SessionManager:
                 raise RuntimeError("No models are configured.")
             self.model_label = available[0]["label"]
 
+        compression_config = get_memory_config(CONFIG).get("compression", {})
+        self._default_compression_model = compression_config.get("model") or ""
+        self.compression_model_label = self._default_compression_model
+
         sessions_config = get_sessions_config(CONFIG)
         self.compress_on_switch = (
             sessions_config.get("compress_on_switch", True)
@@ -117,6 +121,7 @@ class SessionManager:
 
         self._explicit_model = False
         self.current = session
+        self._sync_compression_model(session)
         self._activate_session()
         return session
 
@@ -128,6 +133,9 @@ class SessionManager:
             name=name,
             model_label=self.model_label,
         )
+        if self.compression_model_label:
+            self.current.compression_model = self.compression_model_label
+            self.current.save_meta()
         self._activate_session()
         return self.current
 
@@ -179,6 +187,13 @@ class SessionManager:
             )
         if hasattr(self.engine, "reset_memory"):
             self.engine.reset_memory()
+
+    def _sync_compression_model(self, session: Optional[Session]) -> None:
+        if session is not None and session.compression_model:
+            self.compression_model_label = session.compression_model
+        else:
+            self.compression_model_label = self._default_compression_model
+        self._compressor = None
 
     def _build_instructions(
         self, session: Session, warn_uncompressed: bool = False
@@ -561,7 +576,7 @@ class SessionManager:
 
         memory_config = get_memory_config(CONFIG)
         compression = memory_config.get("compression", {})
-        label = compression.get("model") or self.model_label
+        label = self.compression_model_label or self.model_label
         entry = resolve_model_entry(CONFIG, label)
         model = create_model(entry["provider"], entry["model"])
         prompt = get_compression_prompt(CONFIG)
@@ -648,6 +663,7 @@ class SessionManager:
             session.model = self.model_label
             session.save_meta()
         self.current = session
+        self._sync_compression_model(session)
         self._activate_session()
         self.last_warning = leave["warning"]
         return {
@@ -740,6 +756,22 @@ class SessionManager:
             self.current.model = self.model_label
             self.current.save_meta()
             self._activate_session()
+
+    def list_compression_models(self) -> List[Dict[str, Any]]:
+        current = (self.compression_model_label or self.model_label).lower()
+        models = self.list_models()
+        for item in models:
+            item["current"] = item["label"].lower() == current
+        return models
+
+    def set_compression_model(self, label: str) -> str:
+        entry = resolve_model_entry(CONFIG, label)
+        self.compression_model_label = entry["label"]
+        self._compressor = None
+        if self.current is not None:
+            self.current.compression_model = self.compression_model_label
+            self.current.save_meta()
+        return self.compression_model_label
 
     def context_usage(self) -> Dict[str, Any]:
         empty = {

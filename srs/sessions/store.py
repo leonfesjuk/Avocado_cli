@@ -58,6 +58,7 @@ class Session:
     created_at: str
     updated_at: str
     model: str = ""
+    compression_model: str = ""
     active_tools: List[str] = field(default_factory=list)
     active_experts: Optional[List[str]] = None
     expert_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -97,6 +98,7 @@ class Session:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "model": self.model,
+                "compression_model": self.compression_model,
                 "active_tools": list(self.active_tools),
                 "active_experts": (
                     list(self.active_experts)
@@ -118,6 +120,7 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "model": self.model,
+            "compression_model": self.compression_model,
             "active_tools": list(self.active_tools),
             "active_experts": (
                 list(self.active_experts)
@@ -282,6 +285,7 @@ class SessionStore:
             created_at=meta.get("created_at") or utc_now(),
             updated_at=meta.get("updated_at") or utc_now(),
             model=meta.get("model") or "",
+            compression_model=meta.get("compression_model") or "",
             active_tools=active_tools,
             active_experts=active_experts,
             expert_overrides=expert_overrides,

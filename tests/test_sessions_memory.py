@@ -524,6 +524,40 @@ class ManagerTests(unittest.TestCase):
             manager.set_model("Groq/openai/gpt-oss-20b")
         self.assertEqual(manager.session.model, "Google/gemini-3.8-flash")
 
+    def test_set_compression_model_persists(self):
+        manager = self._manager()
+        manager.open()
+
+        label = manager.set_compression_model("Google/gemini-3.8-flash")
+
+        self.assertEqual(label, "Google/gemini-3.8-flash")
+        self.assertEqual(
+            manager.session.compression_model, "Google/gemini-3.8-flash"
+        )
+
+        restarted = SessionManager(
+            store=self.store,
+            compress_on_switch=False,
+            compress_on_exit=False,
+        )
+        restarted.open(manager.session.session_id)
+        self.assertEqual(
+            restarted.compression_model_label, "Google/gemini-3.8-flash"
+        )
+
+    def test_compression_model_is_used_by_compressor(self):
+        manager = self._manager()
+        manager.open()
+        manager.set_compression_model("Google/gemini-3.8-flash")
+
+        with patch("srs.sessions.manager.create_model") as create:
+            create.return_value = FakeSummaryModel()
+            compressor = manager._get_compressor()
+
+        provider, model_cfg = create.call_args.args
+        self.assertEqual(model_cfg["name"], "gemini-3.8-flash")
+        self.assertEqual(compressor.model.model_id, "fake-summary")
+
     def test_switch_loads_other_session(self):
         manager = self._manager()
         manager.open()
