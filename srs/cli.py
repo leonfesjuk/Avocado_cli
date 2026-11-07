@@ -6,7 +6,13 @@ from typing import Any, Dict, Optional, Sequence
 
 from .sessions.manager import SessionManager
 from .sessions.store import SessionStore
-from .ui import CONSOLE, render_answer, render_expert_calls
+from .ui import (
+    CONSOLE,
+    render_answer,
+    render_banner,
+    render_expert_calls,
+    render_status,
+)
 
 HELP_TEXT = """Commands:
   /help                 show this help
@@ -31,6 +37,7 @@ HELP_TEXT = """Commands:
   /compress             fold the raw step journal into memory.md
   /compress-model [list]  list models used for memory compression
   /compress-model <label> set the model used for memory compression
+  /compress-model default follow the session model again
   /reset [--hard]       clear current history; --hard also clears memory
   /context              show estimated context usage and limits
   /quit                 save and exit
@@ -53,7 +60,7 @@ def _print_context(manager: SessionManager, label: str = "Context") -> None:
         )
     else:
         budget = f"{_fmt_tokens(stats['used'])} tokens (limit unknown)"
-    print(
+    render_status(
         f"{label} (est.): {budget} | history {_fmt_tokens(stats['history_tokens'])}"
         f" | memory {_fmt_tokens(stats['memory_tokens'])}"
         f" | raw {_fmt_tokens(stats['raw_history_tokens'])} ({stats['raw_steps']} events)"
@@ -69,20 +76,24 @@ def _print_context_details(manager: SessionManager) -> None:
         )
     else:
         budget = f"{_fmt_tokens(stats['used'])} tokens (limit unknown)"
-    print(f"Model: {stats['model']}")
-    print(
+    render_status(f"Model: {stats['model']}")
+    render_status(
         "Compression model: "
         + (manager.compression_model_label or stats["model"])
     )
-    print(f"Context (est.): {budget}")
-    print(f"  system+instructions: {_fmt_tokens(stats['prompt_tokens'])} tokens")
-    print(f"  in-memory history:   {_fmt_tokens(stats['history_tokens'])} tokens")
-    print(f"  long-term memory:    {_fmt_tokens(stats['memory_tokens'])} tokens")
-    print(f"  plan:                {_fmt_tokens(stats['plan_tokens'])} tokens")
-    print(f"  raw journal:         {_fmt_tokens(stats['raw_history_tokens'])} tokens "
-          f"({stats['raw_steps']} events)")
+    render_status(f"Context (est.): {budget}")
+    render_status(f"  system+instructions: {_fmt_tokens(stats['prompt_tokens'])} tokens")
+    render_status(f"  in-memory history:   {_fmt_tokens(stats['history_tokens'])} tokens")
+    render_status(f"  long-term memory:    {_fmt_tokens(stats['memory_tokens'])} tokens")
+    render_status(f"  plan:                {_fmt_tokens(stats['plan_tokens'])} tokens")
+    render_status(
+        f"  raw journal:         {_fmt_tokens(stats['raw_history_tokens'])} tokens "
+        f"({stats['raw_steps']} events)"
+    )
     if stats["last_input_tokens"]:
-        print(f"  last request input:  {_fmt_tokens(stats['last_input_tokens'])} tokens")
+        render_status(
+            f"  last request input:  {_fmt_tokens(stats['last_input_tokens'])} tokens"
+        )
 
 
 def _print_compression(manager: SessionManager) -> None:
@@ -99,22 +110,22 @@ def _print_compression(manager: SessionManager) -> None:
     else:
         word = "increased"
         sign = "+"
-    print(
+    render_status(
         f"Compression: context {_fmt_tokens(before['used'])} → {_fmt_tokens(after['used'])}"
         f" ({word} {sign}{_fmt_tokens(abs(delta))}, {abs(pct):.1f}%)"
     )
-    print(
+    render_status(
         f"  history:   {_fmt_tokens(before['history_tokens'])} → {_fmt_tokens(after['history_tokens'])} tokens"
     )
-    print(
+    render_status(
         f"  memory:    {_fmt_tokens(before['memory_tokens'])} → {_fmt_tokens(after['memory_tokens'])} tokens"
     )
-    print(
+    render_status(
         f"  raw journal: {_fmt_tokens(before['raw_history_tokens'])} →"
         f" {_fmt_tokens(after['raw_history_tokens'])} tokens"
     )
     if stats["journal_saved_tokens"]:
-        print(
+        render_status(
             f"  journal source: {_fmt_tokens(stats['source_tokens'])} →"
             f" {_fmt_tokens(stats['summary_tokens'])} tokens"
             f" (saved {_fmt_tokens(stats['journal_saved_tokens'])}, {stats['journal_saved_percent']:.1f}%)"
@@ -133,29 +144,19 @@ def _print_compression_stats(stats: Dict[str, Any]) -> None:
     else:
         word = "increased"
         sign = "+"
-    print(
+    render_status(
         f"Compression: context {_fmt_tokens(before['used'])} → {_fmt_tokens(after['used'])}"
         f" ({word} {sign}{_fmt_tokens(abs(delta))}, {abs(pct):.1f}%)"
     )
-    print(
+    render_status(
         f"  history:   {_fmt_tokens(before['history_tokens'])} → {_fmt_tokens(after['history_tokens'])} tokens"
     )
-    print(
+    render_status(
         f"  memory:    {_fmt_tokens(before['memory_tokens'])} → {_fmt_tokens(after['memory_tokens'])} tokens"
     )
-    print(
+    render_status(
         f"  raw journal: {_fmt_tokens(before['raw_history_tokens'])} →"
         f" {_fmt_tokens(after['raw_history_tokens'])} tokens"
-    )
-
-
-def _print_session(manager: SessionManager) -> None:
-    session = manager.session
-    if session is None:
-        return
-    print(
-        f"Session: {session.name} ({session.session_id}) "
-        f"model={manager.model_label} path={session.path}"
     )
 
 
@@ -270,7 +271,10 @@ def _handle_command(manager: SessionManager, line: str) -> bool:
                 print(f"{marker} {item['label']}")
         else:
             label = manager.set_compression_model(" ".join(args))
-            print(f"Compression model set to {label}.")
+            if label:
+                print(f"Compression model set to {label}.")
+            else:
+                print("Compression model follows the session model.")
     elif command == "/tools":
         action = args[0] if args else "list"
         if action == "list":
@@ -407,11 +411,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     try:
-        manager.open(args.session)
-        _print_session(manager)
+        session = manager.open(args.session)
+        render_banner(
+            session,
+            manager.model_label,
+            manager.compression_model_label,
+        )
         _print_context(manager)
     except Exception as error:
-        print(f"Error: {error}")
+        CONSOLE.print(f"Error: {error}", style="red")
         return 1
 
     if args.once:
@@ -421,16 +429,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             render_answer(result)
             _print_context(manager)
         except Exception as error:
-            print(f"Error: {error}")
+            CONSOLE.print(f"Error: {error}", style="red")
             return 1
         finally:
             manager.close()
             if manager.last_warning:
-                print(f"Warning: {manager.last_warning}")
+                CONSOLE.print(f"Warning: {manager.last_warning}", style="yellow")
             _print_compression(manager)
         return 0
 
-    print("Type /help for commands.")
+    render_status("Type /help for commands.")
     running = True
     try:
         while running:
@@ -445,7 +453,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 try:
                     running = _handle_command(manager, line)
                 except Exception as error:
-                    print(f"Error: {error}")
+                    CONSOLE.print(f"Error: {error}", style="red")
                 continue
             try:
                 result = manager.run(line)
@@ -453,11 +461,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 render_answer(result)
                 _print_context(manager)
             except Exception as error:
-                print(f"Error: {error}")
+                CONSOLE.print(f"Error: {error}", style="red")
     finally:
         manager.close()
         if manager.last_warning:
-            print(f"Warning: {manager.last_warning}")
+            CONSOLE.print(f"Warning: {manager.last_warning}", style="yellow")
         _print_compression(manager)
     return 0
 
