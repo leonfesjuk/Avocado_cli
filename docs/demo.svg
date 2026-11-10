@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="760" viewBox="0 0 1240 760" role="img" aria-label="Avocado AI CLI demo: enabling the logic_specialist expert and delegating a question to it">
+  <defs>
+    <style>
+      .mono { font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace; }
+      .line { font-size: 18px; }
+      .text { fill: #c9d1d9; }
+      .muted { fill: #8b949e; }
+      .green { fill: #7ee787; }
+      .accent { fill: #e3b341; }
+      .lime { fill: #a6e22e; }
+      .border { fill: #30363d; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="760" rx="16" fill="#0d1117"/>
+  <rect x="0" y="0" width="1240" height="52" rx="16" fill="#161b22"/>
+  <rect x="0" y="36" width="1240" height="16" fill="#161b22"/>
+  <circle cx="30" cy="26" r="7" fill="#ff5f56"/>
+  <circle cx="54" cy="26" r="7" fill="#ffbd2e"/>
+  <circle cx="78" cy="26" r="7" fill="#27c93f"/>
+  <text x="108" y="32" class="mono line muted">avocado — terminal</text>
+
+  <g class="mono line">
+    <text x="40" y="100" xml:space="preserve"><tspan class="green">$ </tspan><tspan class="text">avocado --model Groq/qwen/qwen3.8-27b</tspan></text>
+
+    <text x="40" y="136" class="border" xml:space="preserve">╭─ Avocado ───────────────────────────────────────────╮</text>
+    <text x="40" y="162" class="text" xml:space="preserve">│ session  session  (392f1c4d2c54)                    │</text>
+    <text x="40" y="188" class="text" xml:space="preserve">│ model    Groq/qwen/qwen3.8-27b                      │</text>
+    <text x="40" y="214" class="text" xml:space="preserve">│ compress follows the session model                  │</text>
+    <text x="40" y="240" class="border" xml:space="preserve">╰─────────────────────────────────────────────────────╯</text>
+
+    <text x="40" y="266" class="muted" xml:space="preserve">Context (est.): 2,259 / 131,072 tokens (1.7%) | history 0 | memory 0</text>
+
+    <text x="40" y="306" xml:space="preserve"><tspan class="green">avocado&gt; </tspan><tspan class="text">/experts enable logic_specialist</tspan></text>
+    <text x="40" y="332" class="green" xml:space="preserve">Expert 'logic_specialist' enabled.</text>
+
+    <text x="40" y="372" xml:space="preserve"><tspan class="green">avocado&gt; </tspan><tspan class="text">Delegate this subtask to the logic_specialist expert:</tspan></text>
+    <text x="40" y="398" class="text" xml:space="preserve">          is 91 a prime number?</text>
+
+    <text x="40" y="438" class="accent" xml:space="preserve">  ↳ expert · logic_specialist</text>
+    <text x="40" y="464" class="muted" xml:space="preserve">    task:   Determine whether 91 is a prime number and justify it briefly.</text>
+    <text x="40" y="490" class="muted" xml:space="preserve">    answer: 91 is not a prime number (91 = 7 × 13), so it is composite.</text>
+
+    <text x="40" y="530" class="lime" xml:space="preserve">Avocado ────────────────────────────────────────────────</text>
+    <text x="40" y="556" class="text" xml:space="preserve">91 is not a prime number (91 = 7 × 13).</text>
+
+    <text x="40" y="596" class="muted" xml:space="preserve">Context (est.): 3,743 / 131,072 tokens (2.9%) | history 1,083 | memory 0</text>
+  </g>
+
+  <text x="40" y="712" class="mono line muted" font-size="15">Illustrative transcript condensed from a real Groq-only session. Main model: Groq/qwen/qwen3.8-27b.</text>
+</svg>
