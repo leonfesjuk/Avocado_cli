@@ -128,14 +128,21 @@ class ConfigTests(unittest.TestCase):
             validate_config(config)
         self.assertIn("compression.model", str(context.exception))
 
-    def test_compression_transcript_budget_must_be_positive(self):
+    def test_compression_transcript_budget_rejects_negative(self):
         config = _minimal_config()
         config["agent_config"]["memory"] = {
-            "compression": {"max_transcript_tokens": 0}
+            "compression": {"max_transcript_tokens": -1}
         }
         with self.assertRaises(ConfigError) as context:
             validate_config(config)
         self.assertIn("max_transcript_tokens", str(context.exception))
+
+    def test_compression_transcript_budget_zero_disables_limit(self):
+        config = _minimal_config()
+        config["agent_config"]["memory"] = {
+            "compression": {"max_transcript_tokens": 0}
+        }
+        self.assertIs(validate_config(config), config)
 
     def test_compression_prompt_requires_placeholders(self):
         config = _minimal_config()

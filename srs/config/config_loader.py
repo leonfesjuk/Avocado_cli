@@ -94,21 +94,21 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                         "'agent_config.memory.compression.model' must be a string."
                     )
                 max_tokens = compression.get("max_summary_tokens", 1200)
-                if not isinstance(max_tokens, int) or max_tokens <= 0:
+                if not isinstance(max_tokens, int) or max_tokens < 0:
                     errors.append(
                         "'agent_config.memory.compression.max_summary_tokens' "
-                        "must be a positive integer."
+                        "must be a non-negative integer (0 disables the limit)."
                     )
                 transcript_tokens = compression.get(
                     "max_transcript_tokens", 6000
                 )
                 if (
                     not isinstance(transcript_tokens, int)
-                    or transcript_tokens <= 0
+                    or transcript_tokens < 0
                 ):
                     errors.append(
                         "'agent_config.memory.compression.max_transcript_tokens' "
-                        "must be a positive integer."
+                        "must be a non-negative integer (0 disables the limit)."
                     )
                 prompt = compression.get("prompt")
                 if prompt is not None:
